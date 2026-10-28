@@ -447,13 +447,23 @@ if __name__ == "__main__":
         # Skip CUDA build - only install Python packages for FL backend
         install_requires, test_requires = setup_requirements()
         ext_modules = []  # No CUDA extensions
-        package_data = {"": ["VERSION.txt"]}
+        package_data = {
+            "": ["VERSION.txt"],
+            # Include vendor namespace modules and runnable plugin examples
+            # that setuptools.find_packages() does not discover as packages.
+            "transformer_engine.plugin": ["core/backends/vendor/*/*.py", "examples/*.py"],
+        }
         include_package_data = True
         extras_require = {"test": test_requires}
     else:
         install_requires, test_requires = setup_requirements()
         ext_modules = [setup_common_extension()]
-        package_data = {"": ["VERSION.txt"]}
+        package_data = {
+            "": ["VERSION.txt"],
+            # Include vendor namespace modules and runnable plugin examples
+            # that setuptools.find_packages() does not discover as packages.
+            "transformer_engine.plugin": ["core/backends/vendor/*/*.py", "examples/*.py"],
+        }
         include_package_data = True
         extras_require = {"test": test_requires}
 
