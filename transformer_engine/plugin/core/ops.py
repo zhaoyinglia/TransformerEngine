@@ -1042,29 +1042,10 @@ class TEFLBackendBase(ABC):
     ) -> torch.Tensor:
         raise NotImplementedError
 
-    def get_fused_attn_backend(
-        self,
-        is_training: bool,
-        q_dtype: DType,
-        kv_dtype: DType,
-        qkv_layout: NVTE_QKV_Layout,
-        bias_type: NVTE_Bias_Type,
-        attn_mask_type: NVTE_Mask_Type,
-        softmax_type: NVTE_Softmax_Type,
-        p_dropout: float,
-        num_attn_heads: int,
-        num_gqa_groups: int,
-        max_seqlen_q: int,
-        max_seqlen_kv: int,
-        head_dim_qk: int,
-        head_dim_v: int,
-        window_size_left: int,
-        window_size_right: int,
-        return_max_logit: bool,
-        cuda_graph: bool = False,
-        deterministic: bool = False,
-    ) -> NVTE_Fused_Attn_Backend:
+    def get_fused_attn_backend(self, fused_attn_params: Any) -> Tuple[NVTE_Fused_Attn_Backend, str]:
+        """Select fused attention using the complete v2.20.2 attention configuration."""
         raise NotImplementedError
+
 
     def compute_amax(
         self,

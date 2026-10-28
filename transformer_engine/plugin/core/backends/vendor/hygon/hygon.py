@@ -780,63 +780,12 @@ class HygonBackend(TEFLBackendBase):
         tex = self._get_tex()
         return tex.splits_to_offsets(first_dims, logical_last_dim)
 
-    def get_fused_attn_backend(
-        self,
-        is_training: bool,
-        q_dtype: DType,
-        kv_dtype: DType,
-        qkv_layout: NVTE_QKV_Layout,
-        bias_type: NVTE_Bias_Type,
-        attn_mask_type: NVTE_Mask_Type,
-        softmax_type: NVTE_Softmax_Type,
-        p_dropout: float,
-        num_attn_heads: int,
-        num_gqa_groups: int,
-        max_seqlen_q: int,
-        max_seqlen_kv: int,
-        head_dim_qk: int,
-        head_dim_v: int,
-        window_size_left: int,
-        window_size_right: int,
-        return_max_logit: bool,
-        cuda_graph: bool = False,
-        deterministic: bool = False,
-    ) -> NVTE_Fused_Attn_Backend:
-        tex = self._get_tex()
+    def get_fused_attn_backend(self, fused_attn_params: Any) -> Tuple[NVTE_Fused_Attn_Backend, str]:
+        # The vendor extension still exposes the v2.17 positional selector. Its
+        # arguments cannot represent the additional v2.20.2 selection constraints.
+        return (NVTE_Fused_Attn_Backend.NVTE_No_Backend,
+                "hygon fused attention selector requires a v2.20.2 native extension")
 
-        q_dtype = tex.DType(int(q_dtype)) if q_dtype is not None else None
-        kv_dtype = tex.DType(int(kv_dtype)) if kv_dtype is not None else None
-        qkv_layout = tex.NVTE_QKV_Layout(int(qkv_layout)) if qkv_layout is not None else None
-        bias_type = tex.NVTE_Bias_Type(int(bias_type)) if bias_type is not None else None
-        attn_mask_type = (
-            tex.NVTE_Mask_Type(int(attn_mask_type)) if attn_mask_type is not None else None
-        )
-        softmax_type = (
-            tex.NVTE_Softmax_Type(int(softmax_type)) if softmax_type is not None else None
-        )
-
-        result = tex.get_fused_attn_backend(
-            is_training,
-            q_dtype,
-            kv_dtype,
-            qkv_layout,
-            bias_type,
-            attn_mask_type,
-            softmax_type,
-            p_dropout,
-            num_attn_heads,
-            num_gqa_groups,
-            max_seqlen_q,
-            max_seqlen_kv,
-            head_dim_qk,
-            head_dim_v,
-            window_size_left,
-            window_size_right,
-            return_max_logit,
-            cuda_graph,
-            deterministic,
-        )
-        return NVTE_Fused_Attn_Backend(result)
 
     def compute_amax(
         self,
