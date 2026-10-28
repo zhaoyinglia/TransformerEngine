@@ -362,6 +362,12 @@ class FlashAttentionBase(torch.nn.Module, ABC):
             extra_kwargs["load_balancing_strategy"] = load_balancing_strategy
 
         def supported_extra_kwargs(instance):
+            if instance.backend_name == "cuda":
+                # CUDA wraps the target v2.20.2 implementation directly.
+                return {
+                    "softcap": softcap,
+                    "load_balancing_strategy": load_balancing_strategy,
+                }
             if extra_kwargs:
                 import inspect
 

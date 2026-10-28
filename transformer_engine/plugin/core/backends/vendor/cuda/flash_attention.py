@@ -8,6 +8,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 import torch
 
 from transformer_engine.plugin.core.ops import FlashAttentionBase
+from transformer_engine.pytorch.constants import CPLoadBalancingStrategy
 
 
 class FlashAttentionCUDA(FlashAttentionBase):
@@ -107,11 +108,8 @@ class FlashAttentionCUDA(FlashAttentionBase):
         # Ensure native flash attention is initialized
         self._ensure_native_flash_attn()
 
-        extra_kwargs = {}
-        if softcap != 0.0:
-            extra_kwargs["softcap"] = softcap
-        if load_balancing_strategy is not None:
-            extra_kwargs["load_balancing_strategy"] = load_balancing_strategy
+        if load_balancing_strategy is None:
+            load_balancing_strategy = CPLoadBalancingStrategy.DUAL_CHUNK_SWAP
 
         return self._native_flash_attn(
             query_layer=query_layer,
@@ -140,5 +138,6 @@ class FlashAttentionCUDA(FlashAttentionBase):
             num_splits=num_splits,
             cu_seqlens_q_padded=cu_seqlens_q_padded,
             cu_seqlens_kv_padded=cu_seqlens_kv_padded,
-            **extra_kwargs,
+            softcap=softcap,
+            load_balancing_strategy=load_balancing_strategy,
         )
