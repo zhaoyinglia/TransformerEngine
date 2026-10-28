@@ -7,6 +7,7 @@ import warnings
 from typing import Optional, Tuple
 import torch
 import transformer_engine_torch as tex
+from transformer_engine import te_device_type  # pylint: disable=unused-import
 import transformer_engine.pytorch.triton.permutation as triton_permutation
 from transformer_engine.pytorch.constants import TE_DType
 from transformer_engine.pytorch.quantized_tensor import (
@@ -16,6 +17,7 @@ from transformer_engine.pytorch.quantized_tensor import (
 from transformer_engine.pytorch.tensor.float8_tensor import Float8Tensor
 from transformer_engine.pytorch.tensor.float8_blockwise_tensor import Float8BlockwiseQTensor
 from transformer_engine.pytorch.tensor.mxfp8_tensor import MXFP8Tensor
+
 
 __all__ = [
     "moe_permute",
