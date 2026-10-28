@@ -212,6 +212,10 @@ class CUDABackend(TEFLBackendBase):
         num_tensors: int,
         first_dims: List[int],
         tensor_offsets: Optional[Any] = None,
+        *,
+        last_dims: Optional[Any] = None,
+        noop_flag: Optional[torch.Tensor] = None,
+        output: Optional[Any] = None,
     ) -> Any:
         tex = self._get_tex()
         try:
@@ -221,7 +225,11 @@ class CUDABackend(TEFLBackendBase):
                     quantizer.dtype = tex.DType(int(qdtype))
         except Exception:
             pass
-        return tex.group_quantize(tensor, quantizer, num_tensors, first_dims, tensor_offsets)
+        return tex.group_quantize(
+            tensor, quantizer, num_tensors, first_dims,
+            last_dims=last_dims, tensor_offsets=tensor_offsets,
+            noop_flag=noop_flag, output=output,
+        )
 
     def bgrad_group_quantize(
         self,
@@ -230,6 +238,8 @@ class CUDABackend(TEFLBackendBase):
         num_tensors: int,
         first_dims: List[int],
         tensor_offsets: Optional[Any] = None,
+        *,
+        last_dims: Optional[Any] = None,
     ) -> Any:
         tex = self._get_tex()
         try:
@@ -239,7 +249,10 @@ class CUDABackend(TEFLBackendBase):
                     quantizer.dtype = tex.DType(int(qdtype))
         except Exception:
             pass
-        return tex.bgrad_group_quantize(tensor, quantizer, num_tensors, first_dims, tensor_offsets)
+        return tex.bgrad_group_quantize(
+            tensor, quantizer, num_tensors, first_dims,
+            last_dims=last_dims, tensor_offsets=tensor_offsets,
+        )
 
     def generic_gemm(
         self,
@@ -904,6 +917,8 @@ class CUDABackend(TEFLBackendBase):
         rowwise_amax: torch.Tensor,
         columnwise_amax: torch.Tensor,
         tensor_offsets: Optional[Any] = None,
+        *,
+        last_dims: Optional[Any] = None,
     ) -> Any:
         tex = self._get_tex()
         return tex.nvfp4_group_quantize_with_amax(
@@ -911,9 +926,10 @@ class CUDABackend(TEFLBackendBase):
             quantizer,
             num_tensors,
             first_dims,
-            rowwise_amax,
-            columnwise_amax,
-            tensor_offsets,
+            last_dims=last_dims,
+            rowwise_amax=rowwise_amax,
+            columnwise_amax=columnwise_amax,
+            tensor_offsets=tensor_offsets,
         )
 
     def swizzle_scales_and_pack_ptrs_for_discrete_weights(
@@ -1582,6 +1598,7 @@ class CUDABackend(TEFLBackendBase):
         score_function: str,
         expert_bias: Optional[torch.Tensor],
         routing_map_format: int = 0,
+        topk_indices: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         tex = self._get_tex()
         return tex.fused_topk_with_score_function_fwd(
@@ -1594,6 +1611,7 @@ class CUDABackend(TEFLBackendBase):
             score_function,
             expert_bias,
             routing_map_format,
+            topk_indices=topk_indices,
         )
 
     def fused_topk_with_score_function_bwd(
@@ -1606,6 +1624,7 @@ class CUDABackend(TEFLBackendBase):
         use_pre_softmax: bool,
         scaling_factor: Optional[float],
         score_function: str,
+        use_dense_indices: bool = False,
         routing_map_format: int = 0,
     ) -> torch.Tensor:
         tex = self._get_tex()
@@ -1618,7 +1637,8 @@ class CUDABackend(TEFLBackendBase):
             use_pre_softmax,
             scaling_factor,
             score_function,
-            routing_map_format,
+            use_dense_indices=use_dense_indices,
+            routing_map_format=routing_map_format,
         )
 
     def fused_score_for_moe_aux_loss_fwd(

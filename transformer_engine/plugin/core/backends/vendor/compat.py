@@ -6,6 +6,22 @@ import warnings
 _WARNED_OPERATIONS = set()
 
 
+def call_v220_optional(extension, vendor, operation, *args, **kwargs):
+    """Forward new v2.20.2 options or report an older vendor ABI explicitly."""
+    try:
+        return getattr(extension, operation)(*args, **kwargs)
+    except AttributeError as error:
+        raise NotImplementedError(
+            f"{vendor} extension does not provide {operation} from the v2.20.2 API"
+        ) from error
+    except TypeError as error:
+        if not _is_argument_mismatch(error):
+            raise
+        raise NotImplementedError(
+            f"{vendor} extension does not support the v2.20.2 parameters for {operation}"
+        ) from error
+
+
 def _is_argument_mismatch(error):
     message = str(error)
     return any(
@@ -14,6 +30,7 @@ def _is_argument_mismatch(error):
             "incompatible function arguments",
             "positional arguments but",
             "required positional argument",
+            "unexpected keyword argument",
             "takes exactly",
             "expected at most",
         )

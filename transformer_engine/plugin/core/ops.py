@@ -7,10 +7,28 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Union, Type
 from enum import IntEnum
 from contextlib import nullcontext
 import torch
+import sys
 
 from .logger_manager import get_logger
 
 logger = get_logger()
+
+# v2.20.2 native-only capabilities. Non-CUDA backends can add registered
+# implementations independently; until then their invocation is explicit.
+_NATIVE_ONLY_OPERATORS = frozenset({
+    "cusolvermp_ctx_create", "cusolvermp_ctx_destroy", "dsituglu",
+    "ep_combine", "ep_combine_bwd", "ep_dispatch", "ep_dispatch_bwd",
+    "ep_finalize", "ep_get_zero_copy", "ep_handle_mem_size", "ep_initialize",
+    "ep_prepare", "ep_prepare_and_dispatch", "ep_zero_copy_supported",
+    "fused_moe_aux_loss_fwd_graph_safe", "fused_topk_with_score_function_qb_fwd",
+    "group_requantize_inplace", "grouped_mlp_experimental",
+    "multi_tensor_swizzle_scales_for_gemm_unchecked_", "newton_schulz",
+    "nvfp4_2d_scale_transpose", "nvfp4_group_quantize_with_amax",
+    "nvfp4_quantize_with_amax", "scaled_clamped_dswiglu",
+    "scaled_clamped_swiglu", "scaled_dsituglu", "scaled_dsrelu",
+    "scaled_dswiglu", "scaled_situglu", "scaled_srelu", "scaled_swiglu",
+    "situglu",
+})
 
 
 ################### Enums ###################
@@ -907,6 +925,10 @@ class TEFLBackendBase(ABC):
         num_tensors: int,
         first_dims: List[int],
         tensor_offsets: Optional[Any] = None,
+        *,
+        last_dims: Optional[Any] = None,
+        noop_flag: Optional[torch.Tensor] = None,
+        output: Optional[Any] = None,
     ) -> Any:
         raise NotImplementedError
 
@@ -917,6 +939,8 @@ class TEFLBackendBase(ABC):
         num_tensors: int,
         first_dims: List[int],
         tensor_offsets: Optional[Any] = None,
+        *,
+        last_dims: Optional[Any] = None,
     ) -> Any:
         raise NotImplementedError
 
@@ -1414,6 +1438,7 @@ class TEFLBackendBase(ABC):
         score_function: str,
         expert_bias: Optional[torch.Tensor],
         routing_map_format: int = 0,
+        topk_indices: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         raise NotImplementedError
 
@@ -1427,6 +1452,7 @@ class TEFLBackendBase(ABC):
         use_pre_softmax: bool,
         scaling_factor: Optional[float],
         score_function: str,
+        use_dense_indices: bool = False,
         routing_map_format: int = 0,
     ) -> torch.Tensor:
         raise NotImplementedError
@@ -1873,6 +1899,19 @@ class TEFLModule:
         if name.startswith("_"):
             raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
 
+        if name in _NATIVE_ONLY_OPERATORS:
+            native = sys.modules.get("transformer_engine_torch_nv")
+            if native is not None and hasattr(native, name):
+                return getattr(native, name)
+
+            def unsupported_native_operator(*args, **kwargs):
+                raise NotImplementedError(
+                    f"Operator '{name}' requires the v2.20.2 CUDA native extension "
+                    "or a registered implementation for this backend"
+                )
+
+            return unsupported_native_operator
+
         # Verify the operator exists before returning the bound call method
         try:
             self._manager.ensure_initialized()
@@ -1929,7 +1968,7 @@ class TEFLModule:
             name for name, value in vars(TEFLBackendBase).items()
             if not name.startswith("_") and callable(value)
         ]
-        return list(set(module_attrs + op_attrs + declared_ops))
+        return list(set(module_attrs + op_attrs + declared_ops + list(_NATIVE_ONLY_OPERATORS)))
 
     def __getitem__(self, key: str):
         return self.__getattr__(key)

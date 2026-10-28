@@ -8,7 +8,7 @@ import math
 import torch
 
 from ....ops import *
-from ..compat import vendor_te_compat
+from ..compat import vendor_te_compat, call_v220_optional
 
 
 def _load_iluvatar_libs():
@@ -216,6 +216,10 @@ class IluvatarBackend(TEFLBackendBase):
         num_tensors: int,
         first_dims: List[int],
         tensor_offsets: Optional[Any] = None,
+        *,
+        last_dims: Optional[Any] = None,
+        noop_flag: Optional[torch.Tensor] = None,
+        output: Optional[Any] = None,
     ) -> List[Any]:
         tex = self._get_tex()
 
@@ -228,6 +232,13 @@ class IluvatarBackend(TEFLBackendBase):
         except Exception:
             pass
 
+        if last_dims is not None or noop_flag is not None or output is not None:
+            return call_v220_optional(
+                tex, "iluvatar", "group_quantize",
+                tensor, quantizer, num_tensors, first_dims,
+                last_dims=last_dims, tensor_offsets=tensor_offsets,
+                noop_flag=noop_flag, output=output,
+            )
         return tex.group_quantize(tensor, quantizer, num_tensors, first_dims, tensor_offsets)
 
     def bgrad_group_quantize(
@@ -237,6 +248,8 @@ class IluvatarBackend(TEFLBackendBase):
         num_tensors: int,
         first_dims: List[int],
         tensor_offsets: Optional[Any] = None,
+        *,
+        last_dims: Optional[Any] = None,
     ) -> List[Any]:
         tex = self._get_tex()
 
@@ -249,6 +262,12 @@ class IluvatarBackend(TEFLBackendBase):
         except Exception:
             pass
 
+        if last_dims is not None:
+            return call_v220_optional(
+                tex, "iluvatar", "bgrad_group_quantize",
+                tensor, quantizer, num_tensors, first_dims,
+                last_dims=last_dims, tensor_offsets=tensor_offsets,
+            )
         return tex.bgrad_group_quantize(tensor, quantizer, num_tensors, first_dims, tensor_offsets)
 
     def generic_gemm(
@@ -1427,8 +1446,16 @@ class IluvatarBackend(TEFLBackendBase):
         score_function: str,
         expert_bias: Optional[torch.Tensor],
         routing_map_format: int = 0,
+        topk_indices: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         tex = self._get_tex()
+        if topk_indices is not None:
+            return call_v220_optional(
+                tex, "iluvatar", "fused_topk_with_score_function_fwd",
+                logits, topk, use_pre_softmax, num_groups, group_topk,
+                scaling_factor, score_function, expert_bias,
+                routing_map_format=routing_map_format, topk_indices=topk_indices,
+            )
         return tex.fused_topk_with_score_function_fwd(
             logits,
             topk,
@@ -1451,9 +1478,17 @@ class IluvatarBackend(TEFLBackendBase):
         use_pre_softmax: bool,
         scaling_factor: Optional[float],
         score_function: str,
+        use_dense_indices: bool = False,
         routing_map_format: int = 0,
     ) -> torch.Tensor:
         tex = self._get_tex()
+        if use_dense_indices:
+            return call_v220_optional(
+                tex, "iluvatar", "fused_topk_with_score_function_bwd",
+                routing_map, intermediate_output, grad_probs, grad_logits,
+                topk, use_pre_softmax, scaling_factor, score_function,
+                use_dense_indices=use_dense_indices, routing_map_format=routing_map_format,
+            )
         return tex.fused_topk_with_score_function_bwd(
             routing_map,
             intermediate_output,
