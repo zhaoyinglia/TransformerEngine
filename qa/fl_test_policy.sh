@@ -51,7 +51,7 @@ run_test_step() {
         return 0
     fi
     local selector=""
-    if [ "$TE_FL_RUN_EXCLUDED" != 1 ] && [ "$FL_TEST_SUITE" = L0 ]; then
+    if [ "$TE_FL_RUN_EXCLUDED" != 1 ] && [ "$FL_TEST_SUITE" = L0 ] && { [ "$FL_CUDA_AVAILABLE" = 1 ] || [ "${PLATFORM:-}" = metax ]; }; then
         case "$test_path" in
             */test_sanity.py) selector="not (test_sanity_gpt or test_sanity_bert or test_sanity_T5 or test_sanity_amp_and_nvfuser or test_sanity_drop_path or test_sanity_fused_qkv_params or test_sanity_gradient_accumulation_fusion)" ;;
             */test_numerics.py) selector="not (test_linear_accuracy or test_layernorm_linear_accuracy or test_layernorm_mlp_accuracy or test_transformer_layer_hidden_states_format)" ;;
