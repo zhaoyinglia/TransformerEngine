@@ -32,6 +32,21 @@ class DType(IntEnum):
 class Float8BlockScaleTensorFormat(IntEnum):
     GEMM_READY = 0
     COMPACT = 1
+    INVALID = 2
+
+
+class NVTEQBHistogramMode(IntEnum):
+    TWO_KERNEL = 0
+    FUSED_ATOMIC = 1
+
+
+class NVTEScalingMode(IntEnum):
+    NVTE_DELAYED_TENSOR_SCALING = 0
+    NVTE_MXFP8_1D_SCALING = 1
+    NVTE_BLOCK_SCALING_1D = 2
+    NVTE_BLOCK_SCALING_2D = 3
+    NVTE_NVFP4_1D_SCALING = 4
+    NVTE_INVALID_SCALING = 100
 
 
 class NVTE_Activation_Type(IntEnum):
@@ -98,7 +113,6 @@ class NVTE_Mask_Type(IntEnum):
 
 class NVTE_Fused_Attn_Backend(IntEnum):
     NVTE_No_Backend = -1
-    NVTE_F16_max512_seqlen = 0
     NVTE_F16_arbitrary_seqlen = 1
     NVTE_FP8 = 2
 
@@ -142,6 +156,7 @@ class NVTE_QKV_Layout(IntEnum):
     NVTE_Paged_KV_THD_BSHD_BSHD = 23
     NVTE_Paged_KV_THD_SBHD_SBHD = 24
     NVTE_BHSD_BHSD_BHSD = 25
+    NVTE_QKV_Layout_NOT_SET = 26
 
 
 class NVTERoutingMapFormat(IntEnum):
@@ -1830,6 +1845,8 @@ class TEFLModule:
         # emum
         self.DType = DType
         self.Float8BlockScaleTensorFormat = Float8BlockScaleTensorFormat
+        self.NVTEQBHistogramMode = NVTEQBHistogramMode
+        self.NVTEScalingMode = NVTEScalingMode
         self.FP8FwdTensors = FP8FwdTensors
         self.FP8BwdTensors = FP8BwdTensors
         self.NVTE_Activation_Type = NVTE_Activation_Type
@@ -1861,6 +1878,13 @@ class TEFLModule:
             self._manager.ensure_initialized()
             available_ops = self._manager.registry.list_operators()
             if name not in available_ops:
+                if callable(getattr(TEFLBackendBase, name, None)):
+                    def unsupported_operator(*args, **kwargs):
+                        raise NotImplementedError(
+                            f"Operator '{name}' has no registered implementation for this backend"
+                        )
+
+                    return unsupported_operator
                 raise AttributeError(
                     f"Operator '{name}' not found. Available operators: {available_ops}"
                 )
@@ -1877,6 +1901,8 @@ class TEFLModule:
         module_attrs = [
             "DType",
             "Float8BlockScaleTensorFormat",
+            "NVTEQBHistogramMode",
+            "NVTEScalingMode",
             "FP8FwdTensors",
             "FP8BwdTensors",
             "FP8TensorMeta",
@@ -1899,7 +1925,11 @@ class TEFLModule:
         # Add operator names from OpManager's registry
         op_attrs = self._manager.registry.list_operators()
 
-        return list(set(module_attrs + op_attrs))
+        declared_ops = [
+            name for name, value in vars(TEFLBackendBase).items()
+            if not name.startswith("_") and callable(value)
+        ]
+        return list(set(module_attrs + op_attrs + declared_ops))
 
     def __getitem__(self, key: str):
         return self.__getattr__(key)

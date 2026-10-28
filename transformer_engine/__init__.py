@@ -82,6 +82,44 @@ def require_nccl_ep() -> None:
 
 
 try:
+    import torch
+except ImportError:
+    pass
+else:
+    TE_DEVICE_TYPE = "cuda"
+    TE_PLATFORM = torch.cuda
+
+    # Initialize the native extension and plugin alias before vendor patch
+    # imports. The PyTorch package calls this again; the loader is idempotent.
+    try:
+        transformer_engine.common.load_framework_extension("torch")
+    except (ImportError, FileNotFoundError):
+        pass
+
+    for _vendor in ("musa", "tsingmicro", "npu"):
+        try:
+            from importlib import import_module
+
+            import_module(
+                f"transformer_engine.plugin.core.backends.vendor.{_vendor}.patches"
+            ).apply_patch()
+        except Exception:  # pylint: disable=broad-exception-caught
+            pass
+
+
+def te_device_type(default: str = "cuda") -> str:
+    """Return the active FL device type, or the supplied default."""
+    return globals().get("TE_DEVICE_TYPE", default)
+
+
+def te_platform(default=None):
+    """Return the active FL device module, or the supplied default."""
+    if default is None and "torch" in globals():
+        default = torch.cuda
+    return globals().get("TE_PLATFORM", default)
+
+
+try:
     from . import pytorch
 except ImportError:
     pass
