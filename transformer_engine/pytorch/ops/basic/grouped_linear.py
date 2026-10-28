@@ -14,6 +14,7 @@ from typing import Any, Optional
 import torch
 
 import transformer_engine_torch as tex
+from transformer_engine import te_device_type
 from transformer_engine.common.recipe import Recipe
 from ...constants import DType, TE_DType
 from ...cpp_extensions import general_grouped_gemm, general_grouped_gemm_for_grouped_tensor
@@ -1030,7 +1031,7 @@ class GroupedLinear(BasicOperation):
 
         # Get autocast dtype if needed
         if torch.is_autocast_enabled():
-            dtype = torch.get_autocast_dtype("cuda")
+            dtype = torch.get_autocast_dtype(te_device_type())
         else:
             dtype = weight_param.dtype
 
@@ -1182,7 +1183,7 @@ class GroupedLinear(BasicOperation):
         # through ``save_for_backward`` (see ``_fuser_forward_split_quantize``
         # and ``_fuser_forward_grouped_tensor`` for the saved-tensor layout).
         if torch.is_autocast_enabled():
-            ctx.dtype = torch.get_autocast_dtype("cuda")
+            ctx.dtype = torch.get_autocast_dtype(te_device_type())
         else:
             ctx.dtype = weight_param.dtype
         ctx.input_requires_grad = requires_grad[0]

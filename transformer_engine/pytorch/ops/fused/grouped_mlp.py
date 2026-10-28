@@ -17,6 +17,7 @@ import torch
 from packaging.version import Version as PkgVersion
 
 import transformer_engine_torch as tex
+from transformer_engine import te_device_type
 from ...constants import DType, MXFP8_BLOCK_SCALING_SIZE, NVFP4_BLOCK_SCALING_SIZE, TE_DType
 from ...cpu_offload import is_cpu_offload_enabled, mark_activation_offload, start_offload
 from ...cpp_extensions import general_gemm, general_grouped_gemm_for_grouped_tensor
@@ -1224,7 +1225,7 @@ class _GroupedMLP_CuTeGEMMBase(FusedOperation):
 
         device = fc1_weight_param.device
         if torch.is_autocast_enabled():
-            dtype = torch.get_autocast_dtype("cuda")
+            dtype = torch.get_autocast_dtype(te_device_type())
         else:
             dtype = fc1_weight_param.dtype
 
