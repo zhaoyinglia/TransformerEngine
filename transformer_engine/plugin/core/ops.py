@@ -307,6 +307,8 @@ class FlashAttentionBase(torch.nn.Module, ABC):
         num_splits: Optional[int] = 1,
         cu_seqlens_q_padded: Optional[torch.Tensor] = None,
         cu_seqlens_kv_padded: Optional[torch.Tensor] = None,
+        softcap: float = 0.0,
+        load_balancing_strategy: Optional[Any] = None,
     ) -> torch.Tensor:
         """
         Actual forward implementation - subclasses must implement this.
@@ -343,11 +345,40 @@ class FlashAttentionBase(torch.nn.Module, ABC):
         num_splits: Optional[int] = 1,
         cu_seqlens_q_padded: Optional[torch.Tensor] = None,
         cu_seqlens_kv_padded: Optional[torch.Tensor] = None,
+        softcap: float = 0.0,
+        load_balancing_strategy: Optional[Any] = None,
     ) -> torch.Tensor:
         """
         Forward pass with automatic fallback support and caching.
         Delegates to OpManager.call_with_custom_impl for unified dispatch.
         """
+        # Extra v2.20.2 settings are forwarded only when used. Older vendor
+        # implementations keep their existing behavior for default settings.
+        extra_kwargs = {}
+        if softcap != 0.0:
+            extra_kwargs["softcap"] = softcap
+        if (load_balancing_strategy is not None and
+                getattr(load_balancing_strategy, "name", None) != "DUAL_CHUNK_SWAP"):
+            extra_kwargs["load_balancing_strategy"] = load_balancing_strategy
+
+        def supported_extra_kwargs(instance):
+            if extra_kwargs:
+                import inspect
+
+                signature = inspect.signature(instance._forward_impl)
+                accepts_kwargs = any(
+                    parameter.kind is inspect.Parameter.VAR_KEYWORD
+                    for parameter in signature.parameters.values()
+                )
+                unsupported = (set() if accepts_kwargs else
+                               extra_kwargs.keys() - signature.parameters.keys())
+                if unsupported:
+                    raise NotImplementedError(
+                        f"{instance.backend_name} FlashAttention does not support "
+                        f"{', '.join(sorted(unsupported))}"
+                    )
+            return extra_kwargs
+
         if self._manager is None:
             return self._forward_impl(
                 query_layer=query_layer,
@@ -376,6 +407,7 @@ class FlashAttentionBase(torch.nn.Module, ABC):
                 num_splits=num_splits,
                 cu_seqlens_q_padded=cu_seqlens_q_padded,
                 cu_seqlens_kv_padded=cu_seqlens_kv_padded,
+                **supported_extra_kwargs(self),
             )
 
         def call_impl_fn(impl_class):
@@ -407,6 +439,7 @@ class FlashAttentionBase(torch.nn.Module, ABC):
                     num_splits=num_splits,
                     cu_seqlens_q_padded=cu_seqlens_q_padded,
                     cu_seqlens_kv_padded=cu_seqlens_kv_padded,
+                    **supported_extra_kwargs(self),
                 )
             else:
                 fallback_instance = impl_class(**self._init_params)
@@ -439,6 +472,7 @@ class FlashAttentionBase(torch.nn.Module, ABC):
                     num_splits=num_splits,
                     cu_seqlens_q_padded=cu_seqlens_q_padded,
                     cu_seqlens_kv_padded=cu_seqlens_kv_padded,
+                    **supported_extra_kwargs(fallback_instance),
                 )
 
         return self._manager.call_with_custom_impl(

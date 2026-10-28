@@ -101,9 +101,17 @@ class FlashAttentionCUDA(FlashAttentionBase):
         num_splits: Optional[int] = 1,
         cu_seqlens_q_padded: Optional[torch.Tensor] = None,
         cu_seqlens_kv_padded: Optional[torch.Tensor] = None,
+        softcap: float = 0.0,
+        load_balancing_strategy: Optional[Any] = None,
     ) -> torch.Tensor:
         # Ensure native flash attention is initialized
         self._ensure_native_flash_attn()
+
+        extra_kwargs = {}
+        if softcap != 0.0:
+            extra_kwargs["softcap"] = softcap
+        if load_balancing_strategy is not None:
+            extra_kwargs["load_balancing_strategy"] = load_balancing_strategy
 
         return self._native_flash_attn(
             query_layer=query_layer,
@@ -132,4 +140,5 @@ class FlashAttentionCUDA(FlashAttentionBase):
             num_splits=num_splits,
             cu_seqlens_q_padded=cu_seqlens_q_padded,
             cu_seqlens_kv_padded=cu_seqlens_kv_padded,
+            **extra_kwargs,
         )
