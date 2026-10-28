@@ -86,6 +86,8 @@ def test_cuda_registration_preserves_optional_native_operations(monkeypatch):
 
     native = SimpleNamespace(
         scaled_swiglu=lambda *args: args,
+        copy_data_ptrs_to_device=lambda *args: args,
+        splits_to_offsets_multi=lambda *args: args,
         grouped_mlp_experimental=SimpleNamespace(
             swizzle_scales_and_pack_ptrs_for_discrete_weights=lambda *args: args),
     )
@@ -94,6 +96,8 @@ def test_cuda_registration_preserves_optional_native_operations(monkeypatch):
     registry = OpRegistry()
     register_builtins(registry)
     assert "scaled_swiglu" in registry.list_operators()
+    assert "copy_data_ptrs_to_device" in registry.list_operators()
+    assert "splits_to_offsets_multi" in registry.list_operators()
     assert "grouped_mlp_experimental.swizzle_scales_and_pack_ptrs_for_discrete_weights" in registry.list_operators()
 
 
