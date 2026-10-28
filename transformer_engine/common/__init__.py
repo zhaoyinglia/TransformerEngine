@@ -520,7 +520,17 @@ if "NVTE_PROJECT_BUILDING" not in os.environ or bool(int(os.getenv("NVTE_RELEASE
     # separate transformer-engine-cu12/13 package. The upstream PyPI
     # metapackage check would misidentify it as an empty metapackage.
     if not skip_cuda_build():
-        sanity_checks_for_pypi_installation()
+        # FL can install its core and PyTorch extension together. If the
+        # extension was built locally, it is a complete package rather than
+        # the empty upstream metapackage. Still validate split PyPI installs.
+        split_core_installed, _, _ = get_te_core_package_info()
+        if split_core_installed:
+            sanity_checks_for_pypi_installation()
+        else:
+            try:
+                _get_shared_object_file("core")
+            except FileNotFoundError:
+                sanity_checks_for_pypi_installation()
 
     # `_load_cuda_library` is used for packages that must be loaded
     # during runtime. Both system and pypi packages are searched
