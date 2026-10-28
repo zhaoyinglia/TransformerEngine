@@ -82,6 +82,85 @@ def _legacy_arguments(vendor, operation, args):
     return ()
 
 
+def call_legacy_fused_attn_backend(extension, vendor, params):
+    """Use the old selector only when the new config has legacy semantics.
+
+    The selector returns (backend, rejection reason). A None backend means the
+    vendor's old ABI cannot decide this configuration without dropping fields.
+    """
+    def unsupported(field):
+        return None, f"{vendor} fused attention selector cannot represent {field}"
+
+    qkv_dtype = int(params.qkv_dtype)
+    for field in ("o_dtype", "do_dtype", "dqkv_dtype"):
+        if int(getattr(params, field)) != qkv_dtype:
+            return unsupported(field)
+    if int(params.scaling_mode) != 0:
+        return unsupported("scaling_mode")
+
+    layout_name = params.qkv_layout.name
+    if "Paged_KV" in layout_name:
+        return unsupported("paged KV layout")
+    if layout_name.startswith(("NVTE_SB", "NVTE_BS", "NVTE_T", "NVTE_BH")):
+        expected_format = (
+            "NVTE_SBHD" if layout_name.startswith("NVTE_SB") else
+            "NVTE_BSHD" if layout_name.startswith("NVTE_BS") else
+            "NVTE_THD" if layout_name.startswith("NVTE_T") else "NVTE_BHSD"
+        )
+    else:
+        return unsupported("qkv_layout")
+    for field in ("o_format", "do_format"):
+        format_name = getattr(params, field).name
+        if format_name not in (expected_format, "NVTE_QKV_Format_NOT_SET"):
+            return unsupported(field)
+    if params.dqkv_layout.name not in (layout_name, "NVTE_QKV_Layout_NOT_SET"):
+        return unsupported("dqkv_layout")
+    for field in ("qkv_scale_inv_format", "do_scale_inv_format"):
+        if getattr(params, field).name != "NVTE_QKV_Format_NOT_SET":
+            return unsupported(field)
+    for field in (
+        "num_pages_k", "num_pages_v", "page_size_k", "page_size_v",
+        "max_pages_per_seq_k", "max_pages_per_seq_v",
+    ):
+        if getattr(params, field):
+            return unsupported(field)
+    if expected_format == "NVTE_THD" and (params.num_tokens_q or params.num_tokens_kv):
+        return unsupported("ragged token counts")
+    for field in ("bias_batch_size", "bias_num_heads", "bias_seqlen_q", "bias_seqlen_kv"):
+        if getattr(params, field):
+            return unsupported(field)
+    if not params.bottom_right_diagonal and int(params.attn_mask_type) in (4, 5):
+        return unsupported("bottom_right_diagonal")
+
+    def enum(name, value):
+        return getattr(extension, name)(int(value))
+
+    result = extension.get_fused_attn_backend(
+        params.is_training,
+        enum("DType", params.qkv_dtype),
+        enum("DType", params.qkv_dtype),
+        enum("NVTE_QKV_Layout", params.qkv_layout),
+        enum("NVTE_Bias_Type", params.bias_type),
+        enum("NVTE_Mask_Type", params.attn_mask_type),
+        enum("NVTE_Softmax_Type", params.softmax_type),
+        params.dropout,
+        params.num_attn_heads,
+        params.num_gqa_groups,
+        params.max_seqlen_q,
+        params.max_seqlen_kv,
+        params.head_dim_qk,
+        params.head_dim_v,
+        params.window_size_left,
+        params.window_size_right,
+        params.return_max_logit,
+        params.cuda_graph,
+        params.deterministic,
+    )
+    if isinstance(result, tuple):
+        return int(result[0]), result[1]
+    return int(result), ""
+
+
 class VendorTECompat:
     """Prefer the v2.17 ABI and fall back to the last FL ABI when equivalent."""
 

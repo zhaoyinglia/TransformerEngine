@@ -8,7 +8,7 @@ import math
 import torch
 
 from ....ops import *
-from ..compat import vendor_te_compat, call_v220_optional
+from ..compat import vendor_te_compat, call_v220_optional, call_legacy_fused_attn_backend
 
 
 def _load_iluvatar_libs():
@@ -796,11 +796,12 @@ class IluvatarBackend(TEFLBackendBase):
         return tex.splits_to_offsets(first_dims, logical_last_dim)
 
     def get_fused_attn_backend(self, fused_attn_params: Any) -> Tuple[NVTE_Fused_Attn_Backend, str]:
-        # The vendor extension still exposes the v2.17 positional selector. Its
-        # arguments cannot represent the additional v2.20.2 selection constraints.
-        return (NVTE_Fused_Attn_Backend.NVTE_No_Backend,
-                "iluvatar fused attention selector requires a v2.20.2 native extension")
-
+        backend, reason = call_legacy_fused_attn_backend(
+            self._get_tex(), "iluvatar", fused_attn_params
+        )
+        if backend is None:
+            return NVTE_Fused_Attn_Backend.NVTE_No_Backend, reason
+        return NVTE_Fused_Attn_Backend(backend), reason
 
     def compute_amax(
         self,
