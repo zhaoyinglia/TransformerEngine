@@ -516,7 +516,11 @@ def _load_core_library():
 
 
 if "NVTE_PROJECT_BUILDING" not in os.environ or bool(int(os.getenv("NVTE_RELEASE_BUILD", "0"))):
-    sanity_checks_for_pypi_installation()
+    # The FL no-CUDA wheel is a complete Python distribution without a
+    # separate transformer-engine-cu12/13 package. The upstream PyPI
+    # metapackage check would misidentify it as an empty metapackage.
+    if not skip_cuda_build():
+        sanity_checks_for_pypi_installation()
 
     # `_load_cuda_library` is used for packages that must be loaded
     # during runtime. Both system and pypi packages are searched
