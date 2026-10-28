@@ -211,9 +211,8 @@ class CUDABackend(TEFLBackendBase):
         quantizer: Any,
         num_tensors: int,
         first_dims: List[int],
-        tensor_offsets: Optional[Any] = None,
-        *,
         last_dims: Optional[Any] = None,
+        tensor_offsets: Optional[Any] = None,
         noop_flag: Optional[torch.Tensor] = None,
         output: Optional[Any] = None,
     ) -> Any:
@@ -237,9 +236,8 @@ class CUDABackend(TEFLBackendBase):
         quantizer: Any,
         num_tensors: int,
         first_dims: List[int],
-        tensor_offsets: Optional[Any] = None,
-        *,
         last_dims: Optional[Any] = None,
+        tensor_offsets: Optional[Any] = None,
     ) -> Any:
         tex = self._get_tex()
         try:
@@ -908,29 +906,10 @@ class CUDABackend(TEFLBackendBase):
         tex = self._get_tex()
         return tex.nvfp4_quantize_with_amax(tensor, quantizer, rowwise_amax, columnwise_amax)
 
-    def nvfp4_group_quantize_with_amax(
-        self,
-        tensor: torch.Tensor,
-        quantizer: Any,
-        num_tensors: int,
-        first_dims: List[int],
-        rowwise_amax: torch.Tensor,
-        columnwise_amax: torch.Tensor,
-        tensor_offsets: Optional[Any] = None,
-        *,
-        last_dims: Optional[Any] = None,
-    ) -> Any:
-        tex = self._get_tex()
-        return tex.nvfp4_group_quantize_with_amax(
-            tensor,
-            quantizer,
-            num_tensors,
-            first_dims,
-            last_dims=last_dims,
-            rowwise_amax=rowwise_amax,
-            columnwise_amax=columnwise_amax,
-            tensor_offsets=tensor_offsets,
-        )
+    def nvfp4_group_quantize_with_amax(self, *args, **kwargs) -> Any:
+        # Preserve pybind's optional last_dims before required amax arguments.
+        # Python cannot express that positional signature directly.
+        return self._get_tex().nvfp4_group_quantize_with_amax(*args, **kwargs)
 
     def swizzle_scales_and_pack_ptrs_for_discrete_weights(
         self,

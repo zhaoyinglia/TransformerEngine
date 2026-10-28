@@ -924,9 +924,8 @@ class TEFLBackendBase(ABC):
         quantizer: Any,
         num_tensors: int,
         first_dims: List[int],
-        tensor_offsets: Optional[Any] = None,
-        *,
         last_dims: Optional[Any] = None,
+        tensor_offsets: Optional[Any] = None,
         noop_flag: Optional[torch.Tensor] = None,
         output: Optional[Any] = None,
     ) -> Any:
@@ -938,9 +937,8 @@ class TEFLBackendBase(ABC):
         quantizer: Any,
         num_tensors: int,
         first_dims: List[int],
-        tensor_offsets: Optional[Any] = None,
-        *,
         last_dims: Optional[Any] = None,
+        tensor_offsets: Optional[Any] = None,
     ) -> Any:
         raise NotImplementedError
 
@@ -1899,25 +1897,27 @@ class TEFLModule:
         if name.startswith("_"):
             raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
 
-        if name in _NATIVE_ONLY_OPERATORS:
-            native = sys.modules.get("transformer_engine_torch_nv")
-            if native is not None and hasattr(native, name):
-                return getattr(native, name)
+        if name == "grouped_mlp_experimental":
+            # Keep the pybind submodule shape while dispatching its operation
+            # through the same policy as every other plugin operator.
+            from types import SimpleNamespace
 
-            def unsupported_native_operator(*args, **kwargs):
-                raise NotImplementedError(
-                    f"Operator '{name}' requires the v2.20.2 CUDA native extension "
-                    "or a registered implementation for this backend"
+            return SimpleNamespace(
+                swizzle_scales_and_pack_ptrs_for_discrete_weights=self.__getattr__(
+                    "grouped_mlp_experimental.swizzle_scales_and_pack_ptrs_for_discrete_weights"
                 )
-
-            return unsupported_native_operator
+            )
 
         # Verify the operator exists before returning the bound call method
         try:
             self._manager.ensure_initialized()
             available_ops = self._manager.registry.list_operators()
             if name not in available_ops:
-                if callable(getattr(TEFLBackendBase, name, None)):
+                if (
+                    callable(getattr(TEFLBackendBase, name, None))
+                    or name in _NATIVE_ONLY_OPERATORS
+                    or name == "grouped_mlp_experimental.swizzle_scales_and_pack_ptrs_for_discrete_weights"
+                ):
                     def unsupported_operator(*args, **kwargs):
                         raise NotImplementedError(
                             f"Operator '{name}' has no registered implementation for this backend"

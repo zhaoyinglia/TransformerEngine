@@ -244,9 +244,8 @@ class MetaxBackend(TEFLBackendBase):
         quantizer: Any,
         num_tensors: int,
         first_dims: List[int],
-        tensor_offsets: Optional[Any] = None,
-        *,
         last_dims: Optional[Any] = None,
+        tensor_offsets: Optional[Any] = None,
         noop_flag: Optional[torch.Tensor] = None,
         output: Optional[Any] = None,
     ) -> List[Any]:
@@ -276,9 +275,8 @@ class MetaxBackend(TEFLBackendBase):
         quantizer: Any,
         num_tensors: int,
         first_dims: List[int],
-        tensor_offsets: Optional[Any] = None,
-        *,
         last_dims: Optional[Any] = None,
+        tensor_offsets: Optional[Any] = None,
     ) -> List[Any]:
         tex = self._get_tex()
 

@@ -109,6 +109,20 @@ class VendorTECompat:
             return attribute
 
         def call(*args, **kwargs):
+            # These wrappers supply the v2.17 positional contract. v2.20.2
+            # inserted parameters before offsets / routing_map_format, so use
+            # names first to avoid a successful call with shifted meanings.
+            named_args = None
+            if not kwargs and name in {"group_quantize", "bgrad_group_quantize"} and len(args) == 5:
+                named_args = (args[:4], {"tensor_offsets": args[4]})
+            elif not kwargs and name == "fused_topk_with_score_function_bwd" and len(args) == 9:
+                named_args = (args[:8], {"routing_map_format": args[8]})
+            if named_args is not None:
+                try:
+                    return attribute(*named_args[0], **named_args[1])
+                except TypeError as error:
+                    if not _is_argument_mismatch(error):
+                        raise
             try:
                 return attribute(*args, **kwargs)
             except TypeError as error:
