@@ -161,6 +161,7 @@ def setup_common_extension() -> CMakeExtension:
     # NCCL EP (Hopper+): on by default; auto-skipped when no arch >= 90 is
     # targeted. Set NVTE_WITH_NCCL_EP=0 to force off.
     if nccl_ep_enabled(archs):
+        cmake_flags.append("-DNVTE_WITH_NCCL_EP=ON")
         nccl_home = build_nccl_ep_submodule()
         cmake_flags.append(f"-DNCCL_INCLUDE_DIR={nccl_home}/include")
     else:
