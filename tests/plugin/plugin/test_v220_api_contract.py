@@ -129,3 +129,25 @@ def test_cuda_swap_first_dims_uses_keyword_output_buffer(use_output_buffer):
     backend = CUDABackend()
     backend._get_tex = lambda: SimpleNamespace(swap_first_dims=native)
     assert backend.swap_first_dims(tensor, output) is result
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_cublasmp_build_query_is_exported_and_registered(monkeypatch, enabled):
+    from transformer_engine.plugin.core.backends.vendor.cuda.cuda import CUDABackend
+    from transformer_engine.plugin.core.backends.vendor.cuda.register_ops import register_builtins
+    from transformer_engine.plugin.core.registry import OpRegistry
+
+    native = SimpleNamespace(nvte_built_with_cublasmp=lambda: enabled)
+    monkeypatch.setattr(CUDABackend, "is_available", lambda self: True)
+    monkeypatch.setattr(CUDABackend, "_get_tex", lambda self: native)
+    registry = OpRegistry()
+    register_builtins(registry)
+    implementation = registry.get_implementations("nvte_built_with_cublasmp")[0]
+    manager = SimpleNamespace(
+        ensure_initialized=lambda: None,
+        registry=registry,
+        call=lambda name: implementation.fn(),
+    )
+    module = TEFLModule(manager)
+    assert "nvte_built_with_cublasmp" in module.__all__
+    assert module.nvte_built_with_cublasmp() is enabled

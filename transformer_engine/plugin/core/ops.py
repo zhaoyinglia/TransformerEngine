@@ -21,6 +21,8 @@ _NATIVE_ONLY_OPERATORS = frozenset({
     "copy_data_ptrs_to_device", "multi_tensor_transpose_to_bhsd",
     "splits_to_offsets_multi", "thd_copy_valid_tokens_from_per_split_to_rank_local",
     "thd_cp_rank_order_to_sequence_order", "thd_sequence_order_to_cp_rank_order",
+    # Query whether this CUDA build enables the optional cuBLASMp overlap path.
+    "nvte_built_with_cublasmp",
     "cusolvermp_ctx_create", "cusolvermp_ctx_destroy", "dsituglu",
     "ep_combine", "ep_combine_bwd", "ep_dispatch", "ep_dispatch_bwd",
     "ep_finalize", "ep_get_zero_copy", "ep_handle_mem_size", "ep_initialize",
