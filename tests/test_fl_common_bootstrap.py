@@ -78,10 +78,10 @@ def loader(common, monkeypatch):
 
 
 def test_native_and_fl_aliases_are_stable(common, loader):
-    common.load_framework_extension("torch")
+    common.load_framework_extension("torch_nv")
     assert sys.modules["transformer_engine_torch"] is loader.stub
     assert sys.modules["transformer_engine_torch_nv"] is loader.native
-    common.load_framework_extension("torch")
+    common.load_framework_extension("torch_nv")
     assert loader.loads == 1
 
 
@@ -92,12 +92,12 @@ def test_failed_initialization_can_retry(common, loader, failure):
     elif failure == "cudnn":
         loader.version = 91100
     with pytest.raises((ImportError, RuntimeError)):
-        common.load_framework_extension("torch")
+        common.load_framework_extension("torch_nv")
     assert sys.modules["transformer_engine_torch"] is loader.stub
     assert "transformer_engine_torch_nv" not in sys.modules
     loader.error = None
     loader.version = 91300
-    common.load_framework_extension("torch")
+    common.load_framework_extension("torch_nv")
     assert sys.modules["transformer_engine_torch"] is loader.stub
 
 
@@ -116,19 +116,17 @@ def test_external_plugin_retains_native_alias(common, loader, monkeypatch, failu
     monkeypatch.setenv("NVTE_PLUGIN", external.__name__)
     if failure:
         with pytest.warns(RuntimeWarning, match="external setup failed"):
-            common.load_framework_extension("torch")
+            common.load_framework_extension("torch_nv")
     else:
-        common.load_framework_extension("torch")
+        common.load_framework_extension("torch_nv")
     assert sys.modules["transformer_engine_torch_nv"] is loader.native
     assert sys.modules["transformer_engine_torch"] is (loader.stub if failure else replacement)
 
 
-def test_empty_override_uses_build_metadata(common, monkeypatch, tmp_path):
-    root = tmp_path / "transformer_engine"
-    (root / "common").mkdir(parents=True)
-    (root / "plugin/core").mkdir(parents=True)
-    (root / "plugin/core/_build_config.py").write_text("SKIP_CUDA_BUILD = True\n")
-    monkeypatch.setattr(common, "__file__", str(root / "common/__init__.py"))
+def test_empty_override_uses_build_metadata(common, monkeypatch):
+    config = ModuleType("transformer_engine.plugin.core._build_config")
+    config.SKIP_CUDA_BUILD = True
+    monkeypatch.setitem(sys.modules, config.__name__, config)
     monkeypatch.setenv("TE_FL_SKIP_CUDA", "")
     assert common.skip_cuda_build() is True
     monkeypatch.setenv("TE_FL_SKIP_CUDA", "0")
@@ -141,7 +139,7 @@ def test_no_cuda_skips_native_and_install_checks(common, loader, monkeypatch):
         pytest.fail("no-CUDA build queried split CUDA packages")
     monkeypatch.setattr(common, "get_te_core_package_info", forbidden)
     common.sanity_checks_for_pypi_installation()
-    common.load_framework_extension("torch")
+    common.load_framework_extension("torch_nv")
     assert loader.loads == 0
 
 

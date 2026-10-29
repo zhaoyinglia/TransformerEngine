@@ -12,7 +12,6 @@ from importlib.metadata import version, distribution, PackageNotFoundError
 import os
 from pathlib import Path
 import platform
-import runpy
 import subprocess
 import sys
 import sysconfig
@@ -26,16 +25,30 @@ MIN_CUDNN_VERSION = (9, 12, 0)
 
 
 def skip_cuda_build() -> bool:
-    """Return whether the FL installation omits native CUDA libraries."""
-    value = os.environ.get("TE_FL_SKIP_CUDA")
-    if value:
-        return bool(int(value))
-    # Read build metadata without importing plugin.core while common initializes.
-    config_path = Path(__file__).resolve().parent.parent / "plugin/core/_build_config.py"
-    return bool(runpy.run_path(str(config_path))["SKIP_CUDA_BUILD"]) if config_path.is_file() else False
+    """Check if CUDA build was skipped (FL-only mode).
+
+    First checks environment variable (for runtime override),
+    then falls back to build-time configuration.
+    """
+    # Environment variable takes precedence (allows runtime override)
+    if os.environ.get("TE_FL_SKIP_CUDA"):
+        return bool(int(os.environ.get("TE_FL_SKIP_CUDA", "0")))
+
+    # Fall back to build-time configuration
+    try:
+        from transformer_engine.plugin.core._build_config import SKIP_CUDA_BUILD
+
+        return SKIP_CUDA_BUILD
+    except ImportError:
+        # If build config doesn't exist, default to False
+        return False
 
 
-# Preserve the FL public module registration before framework imports.
+# Load plugin system - this handles module registration and backend initialization
+# The _module_setup inside core will:
+# 1. Register modules under both full and short names for relative imports
+# 2. Load all available backends (flagos, reference, vendor/cuda, etc.)
+# 3. Register transformer_engine_torch module from the selected backend
 import transformer_engine.plugin.core  # noqa: F401  # pylint: disable=wrong-import-position
 
 
@@ -186,73 +199,98 @@ def get_te_core_package_info() -> Tuple[bool, str, str]:
 
 @functools.lru_cache(maxsize=None)
 def load_framework_extension(framework: str) -> None:
-    """Load native bindings without replacing the FL public PyTorch module."""
-    assert framework in ("jax", "torch_nv", "torch"), f"Unsupported framework {framework}"
+    """
+    Load shared library with Transformer Engine framework bindings.
+
+    For PyTorch: The native module is now named transformer_engine_torch_nv,
+    and transformer_engine_torch is provided by the plugin system.
+    This function is kept for backward compatibility but does nothing for torch.
+    """
+
+    # Skip loading native extensions if CUDA build was skipped (FL-only mode)
     if skip_cuda_build():
         return
 
-    # Keep the original FL native module name; accept upstream callers too.
-    is_torch = framework in ("torch", "torch_nv")
-    library = "torch_nv" if is_torch else framework
-    module_name = f"transformer_engine_{library}"
-    package_name = "transformer_engine_torch" if is_torch else module_name
-    extra_dep_name = "pytorch" if is_torch else package_name
+    # Supported frameworks.
+    assert framework in ("jax", "torch_nv"), f"Unsupported framework {framework}"
+
+    # For jax: load the native module as before
+    module_name = f"transformer_engine_{framework}"
+
+    # Name of the pip extra dependency for framework extensions from PyPI.
+    extra_dep_name = module_name
+    if framework == "torch_nv":
+        extra_dep_name = "pytorch"
+
+    # Skip if already loaded
+    if module_name in sys.modules:
+        check_cudnn_version(sys.modules[module_name].get_cudnn_version())
+        if framework != "torch_nv" or not os.environ.get("NVTE_PLUGIN"):
+            return
+
+    # Find the TE packages. The core and framework packages can only be installed via PyPI.
+    # For the `transformer-engine` package, we need to check explicity.
     te_core_installed, te_core_package_name, te_core_version = get_te_core_package_info()
-    assert _is_package_installed("transformer_engine"), "Could not find `transformer_engine`."
-    if _is_package_installed(package_name):
-        assert _is_package_installed_from_wheel("transformer_engine"), (
-            "Could not find `transformer-engine` PyPI package."
-        )
+    te_framework_installed = _is_package_installed(module_name)
+    te_installed = _is_package_installed("transformer_engine")
+    te_installed_via_pypi = _is_package_installed_from_wheel("transformer_engine")
+
+    assert te_installed, "Could not find `transformer_engine`."
+
+    # If the framework extension pip package is installed, it means that TE is installed via
+    # PyPI. For this case we need to make sure that the metapackage, the core lib, and framework
+    # extension are all installed via PyPI and have matching versions.
+    if te_framework_installed:
+        assert te_installed_via_pypi, "Could not find `transformer-engine` PyPI package."
         assert te_core_installed, "Could not find TE core package `transformer-engine-cu*`."
-        assert version(package_name) == version("transformer-engine") == te_core_version, (
+
+        assert version(module_name) == version("transformer-engine") == te_core_version, (
             "Transformer Engine package version mismatch. Found"
-            f" {package_name} v{version(package_name)}, transformer-engine"
+            f" {module_name} v{version(module_name)}, transformer-engine"
             f" v{version('transformer-engine')}, and {te_core_package_name}"
             f" v{te_core_version}. Install transformer-engine using "
             f"'pip3 install --no-build-isolation transformer-engine[{extra_dep_name}]==VERSION'"
         )
 
-    # Backend discovery may already have imported the native _nv module.
-    # Still perform the upstream cuDNN validation on that path.
+    # After all checks are completed, load the shared object file.
     solib = sys.modules.get(module_name)
     if solib is None:
-        spec = importlib.util.spec_from_file_location(module_name, _get_shared_object_file(library))
+        spec = importlib.util.spec_from_file_location(module_name, _get_shared_object_file(framework))
         solib = importlib.util.module_from_spec(spec)
         sys.modules[module_name] = solib
         try:
             spec.loader.exec_module(solib)
             check_cudnn_version(solib.get_cudnn_version())
         except Exception:
+            # A failed native load must not satisfy the already-loaded guard.
             sys.modules.pop(module_name, None)
             raise
-    else:
-        check_cudnn_version(solib.get_cudnn_version())
 
-    # Optional upstream plugin entrypoint. The default FL public registration
-    # is already in place; only an explicitly selected plugin may replace it.
-    plugin_name = os.environ.get("NVTE_PLUGIN")
-    if plugin_name and is_torch:
+    # Upstream optional plugin entrypoint; FL already owns the public module.
+    _nvte_plugin = os.environ.get("NVTE_PLUGIN")
+    if _nvte_plugin and framework == "torch_nv":
         public_name = "transformer_engine_torch"
-        original_module = sys.modules.get(public_name)
+        _original_module = sys.modules.get(public_name)
         try:
-            plugin = importlib.import_module(plugin_name)
-            plugin.load_plugins()
-        except Exception as exc:  # pylint: disable=broad-exception-caught
+            _plugin = importlib.import_module(_nvte_plugin)
+            _plugin.load_plugins()
+        except Exception as e:  # pylint: disable=broad-exception-caught
             sys.modules[module_name] = solib
-            if original_module is None:
-                sys.modules.pop(public_name, None)
+            if _original_module is not None:
+                sys.modules[public_name] = _original_module
             else:
-                sys.modules[public_name] = original_module
+                sys.modules.pop(public_name, None)
             warnings.warn(
-                f"NVTE_PLUGIN={plugin_name} but plugin loading failed: {exc}",
+                f"NVTE_PLUGIN={_nvte_plugin} but plugin loading failed: {e}",
                 RuntimeWarning,
                 stacklevel=2,
             )
 
 
 def sanity_checks_for_pypi_installation() -> None:
-    """Validate split PyPI installs while accepting complete FL distributions."""
+    """Ensure that package is installed correctly if using PyPI."""
 
+    # Skip sanity checks if CUDA build was skipped (FL-only mode)
     if skip_cuda_build():
         return
 
