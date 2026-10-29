@@ -358,6 +358,8 @@ def cudnn_frontend_include_path() -> Path:
 
 @functools.lru_cache(maxsize=None)
 def cuda_archs() -> str:
+    if bool(int(os.getenv("TE_FL_SKIP_CUDA", "0"))):
+        return ""
     archs = os.getenv("NVTE_CUDA_ARCHS")
     if archs is None:
         version = cuda_version()

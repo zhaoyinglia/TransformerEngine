@@ -129,23 +129,51 @@ breathe_default_project = "TransformerEngine"
 
 autoapi_generate_api_docs = False
 autoapi_dirs = [root_path / "transformer_engine"]
-autoapi_ignore = ["*test*"]
+autoapi_ignore = ["*test*", "*/benchmarks/*"]
+
+suppress_warnings = [
+    "autoapi.python_import_resolution",
+    "autoapi",
+]
 
 
 # There are 2 warnings about the same namespace (transformer_engine) in two different c++ api
-# docs pages. This seems to be the only way to suppress these warnings.
+# docs pages, and "Unknown type: placeholder" warnings from autoapi/breathe.
+# Install logging filters at module load time so they catch warnings emitted
+# before setup() is called.
+import logging as _logging
+import warnings as _warnings
+
+_warnings.filterwarnings("ignore", message=".*Unknown type.*placeholder.*")
+
+
+class _KnownWarningFilter(_logging.Filter):
+    def filter(self, record):
+        message = record.getMessage()
+        if "Duplicate C++ declaration" in message and "transformer_engine" in message:
+            return False
+        if "Unknown type" in message and "placeholder" in message:
+            return False
+        return True
+
+
+for _logger_name in ["sphinx", "sphinx.application", "autoapi", ""]:
+    _logging.getLogger(_logger_name).addFilter(_KnownWarningFilter())
+
+
 def setup(app):
     """Custom Sphinx setup to filter warnings."""
-    import logging
+    import sphinx.util.logging
 
-    # Filter out duplicate C++ declaration warnings
-    class DuplicateDeclarationFilter(logging.Filter):
-        def filter(self, record):
-            message = record.getMessage()
-            if "Duplicate C++ declaration" in message and "transformer_engine" in message:
-                return False
-            return True
+    # Monkey-patch Sphinx's warning handler to filter known warnings
+    original_warning = sphinx.util.logging.SphinxLoggerAdapter.warning
 
-    # Apply filter to Sphinx logger
-    logger = logging.getLogger("sphinx")
-    logger.addFilter(DuplicateDeclarationFilter())
+    def filtered_warning(self, msg, *args, **kwargs):
+        msg_str = str(msg)
+        if "Unknown type" in msg_str and "placeholder" in msg_str:
+            return
+        if "Duplicate C++ declaration" in msg_str and "transformer_engine" in msg_str:
+            return
+        return original_warning(self, msg, *args, **kwargs)
+
+    sphinx.util.logging.SphinxLoggerAdapter.warning = filtered_warning

@@ -8,6 +8,7 @@ from typing import Optional, Tuple, List, Union
 import math
 
 import torch
+from transformer_engine import te_device_type, te_platform
 from ...quantized_tensor import QuantizedTensorStorage, Quantizer
 
 from ..mxfp8_tensor import MXFP8Tensor
@@ -668,7 +669,7 @@ class GroupedTensorStorage:
 
         # Set device
         if device is None:
-            device = torch.cuda.current_device()
+            device = te_platform().current_device()
 
         # Shape patterns and validation.
         all_same_first = first_dims is None
@@ -713,7 +714,12 @@ class GroupedTensorStorage:
         compatible_recipe = None if no_quantization else quantizer._get_compatible_recipe()
 
         if not shape:
-            if torch.cuda.is_available() and torch.cuda.is_current_stream_capturing():
+            platform = te_platform()
+            if (
+                tensor_offsets.device.type == te_device_type()
+                and platform.is_available()
+                and platform.is_current_stream_capturing()
+            ):
                 raise ValueError(
                     "Varying-dimension grouped tensor construction is not graph-safe: it"
                     " requires device-to-host copies of per-tensor shapes/offsets."
