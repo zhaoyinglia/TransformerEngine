@@ -16,7 +16,7 @@ import torch
 
 
 from ....ops import *
-from ..compat import vendor_te_compat
+from ..compat import vendor_te_compat, call_v220_optional, call_legacy_fused_attn_backend
 
 
 _enflame_libs_loaded = False
@@ -144,7 +144,10 @@ class EnflameBackend(TEFLBackendBase):
         quantizer: Any,
         num_tensors: int,
         first_dims: List[int],
+        last_dims: Optional[Any] = None,
         tensor_offsets: Optional[Any] = None,
+        noop_flag: Optional[torch.Tensor] = None,
+        output: Optional[Any] = None,
     ) -> Any:
         tex = self._get_tex()
 
@@ -157,6 +160,13 @@ class EnflameBackend(TEFLBackendBase):
         except Exception:
             pass
 
+        if last_dims is not None or noop_flag is not None or output is not None:
+            return call_v220_optional(
+                tex, "enflame", "group_quantize",
+                tensor, quantizer, num_tensors, first_dims,
+                last_dims=last_dims, tensor_offsets=tensor_offsets,
+                noop_flag=noop_flag, output=output,
+            )
         return tex.group_quantize(tensor, quantizer, num_tensors, first_dims, tensor_offsets)
 
     def bgrad_group_quantize(
@@ -165,6 +175,7 @@ class EnflameBackend(TEFLBackendBase):
         quantizer: Any,
         num_tensors: int,
         first_dims: List[int],
+        last_dims: Optional[Any] = None,
         tensor_offsets: Optional[Any] = None,
     ) -> Any:
         tex = self._get_tex()
@@ -178,6 +189,12 @@ class EnflameBackend(TEFLBackendBase):
         except Exception:
             pass
 
+        if last_dims is not None:
+            return call_v220_optional(
+                tex, "enflame", "bgrad_group_quantize",
+                tensor, quantizer, num_tensors, first_dims,
+                last_dims=last_dims, tensor_offsets=tensor_offsets,
+            )
         return tex.bgrad_group_quantize(tensor, quantizer, num_tensors, first_dims, tensor_offsets)
 
     def generic_gemm(
@@ -709,63 +726,13 @@ class EnflameBackend(TEFLBackendBase):
         tex = self._get_tex()
         return tex.splits_to_offsets(first_dims, logical_last_dim)
 
-    def get_fused_attn_backend(
-        self,
-        is_training: bool,
-        q_dtype: DType,
-        kv_dtype: DType,
-        qkv_layout: NVTE_QKV_Layout,
-        bias_type: NVTE_Bias_Type,
-        attn_mask_type: NVTE_Mask_Type,
-        softmax_type: NVTE_Softmax_Type,
-        p_dropout: float,
-        num_attn_heads: int,
-        num_gqa_groups: int,
-        max_seqlen_q: int,
-        max_seqlen_kv: int,
-        head_dim_qk: int,
-        head_dim_v: int,
-        window_size_left: int,
-        window_size_right: int,
-        return_max_logit: bool,
-        cuda_graph: bool = False,
-        deterministic: bool = False,
-    ) -> NVTE_Fused_Attn_Backend:
-        tex = self._get_tex()
-
-        q_dtype = tex.DType(int(q_dtype)) if q_dtype is not None else None
-        kv_dtype = tex.DType(int(kv_dtype)) if kv_dtype is not None else None
-        qkv_layout = tex.NVTE_QKV_Layout(int(qkv_layout)) if qkv_layout is not None else None
-        bias_type = tex.NVTE_Bias_Type(int(bias_type)) if bias_type is not None else None
-        attn_mask_type = (
-            tex.NVTE_Mask_Type(int(attn_mask_type)) if attn_mask_type is not None else None
+    def get_fused_attn_backend(self, fused_attn_params: Any) -> Tuple[NVTE_Fused_Attn_Backend, str]:
+        backend, reason = call_legacy_fused_attn_backend(
+            self._get_tex(), "enflame", fused_attn_params
         )
-        softmax_type = (
-            tex.NVTE_Softmax_Type(int(softmax_type)) if softmax_type is not None else None
-        )
-
-        result = tex.get_fused_attn_backend(
-            is_training,
-            q_dtype,
-            kv_dtype,
-            qkv_layout,
-            bias_type,
-            attn_mask_type,
-            softmax_type,
-            p_dropout,
-            num_attn_heads,
-            num_gqa_groups,
-            max_seqlen_q,
-            max_seqlen_kv,
-            head_dim_qk,
-            head_dim_v,
-            window_size_left,
-            window_size_right,
-            return_max_logit,
-            cuda_graph,
-            deterministic,
-        )
-        return NVTE_Fused_Attn_Backend(result)
+        if backend is None:
+            return NVTE_Fused_Attn_Backend.NVTE_No_Backend, reason
+        return NVTE_Fused_Attn_Backend(backend), reason
 
     def compute_amax(
         self,
@@ -1358,8 +1325,16 @@ class EnflameBackend(TEFLBackendBase):
         score_function: str,
         expert_bias: Optional[torch.Tensor],
         routing_map_format: int = 0,
+        topk_indices: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         tex = self._get_tex()
+        if topk_indices is not None:
+            return call_v220_optional(
+                tex, "enflame", "fused_topk_with_score_function_fwd",
+                logits, topk, use_pre_softmax, num_groups, group_topk,
+                scaling_factor, score_function, expert_bias,
+                routing_map_format=routing_map_format, topk_indices=topk_indices,
+            )
         return tex.fused_topk_with_score_function_fwd(
             logits,
             topk,
@@ -1382,9 +1357,17 @@ class EnflameBackend(TEFLBackendBase):
         use_pre_softmax: bool,
         scaling_factor: Optional[float],
         score_function: str,
+        use_dense_indices: bool = False,
         routing_map_format: int = 0,
     ) -> torch.Tensor:
         tex = self._get_tex()
+        if use_dense_indices:
+            return call_v220_optional(
+                tex, "enflame", "fused_topk_with_score_function_bwd",
+                routing_map, intermediate_output, grad_probs, grad_logits,
+                topk, use_pre_softmax, scaling_factor, score_function,
+                use_dense_indices=use_dense_indices, routing_map_format=routing_map_format,
+            )
         return tex.fused_topk_with_score_function_bwd(
             routing_map,
             intermediate_output,

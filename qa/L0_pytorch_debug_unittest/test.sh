@@ -1,4 +1,4 @@
-# Copyright (c) 2022-2025, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# Copyright (c) 2022-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 #
 # See LICENSE for license information.
 
@@ -11,15 +11,18 @@
 : ${XML_LOG_DIR:=/logs}
 mkdir -p "$XML_LOG_DIR"
 
+# L0 keeps one mature FlashAttention generation; L3 owns newer-generation coverage.
+export NVTE_FLASH_ATTN_V2=1
+export NVTE_FLASH_ATTN_V3=0
+export NVTE_FLASH_ATTN_V4=0
+
 # Config with the dummy feature which prevents nvinspect from being disabled.
 # Nvinspect will be disabled if no feature is active.
 : ${NVTE_TEST_NVINSPECT_DUMMY_CONFIG_FILE:=$TE_PATH/tests/pytorch/debug/test_configs/dummy_feature.yaml}
 
 FAIL=0
 
-# It is not installed as a requirement,
-# because it is not available on PyPI.
-pip install pytest==8.2.1
+pip install pytest==8.2.1 || exit 1
 
 METAX_IGNORED_TESTS=(
     "$TE_PATH/tests/pytorch/test_numerics.py"
@@ -86,8 +89,9 @@ run_test_step "test_perf.xml" "$TE_PATH/tests/pytorch/debug/test_perf.py" \
 
 
 # Step 7: Sanity 2
+# Include the upstream single-grouped-parameter debug guard checks.
 run_test_step "test_sanity_2.xml" "$TE_PATH/tests/pytorch/test_sanity.py" \
-"NVTE_TEST_NVINSPECT_ENABLED=1 NVTE_TEST_NVINSPECT_CONFIG_FILE=$NVTE_TEST_NVINSPECT_DUMMY_CONFIG_FILE NVTE_TEST_NVINSPECT_FEATURE_DIRS=$NVTE_TEST_NVINSPECT_FEATURE_DIRS PYTORCH_JIT=0 NVTE_TORCH_COMPILE=0 NVTE_ALLOW_NONDETERMINISTIC_ALGO=0 \
+"NVTE_GROUPED_LINEAR_SINGLE_PARAM=1 NVTE_TEST_NVINSPECT_ENABLED=1 NVTE_TEST_NVINSPECT_CONFIG_FILE=$NVTE_TEST_NVINSPECT_DUMMY_CONFIG_FILE NVTE_TEST_NVINSPECT_FEATURE_DIRS=$NVTE_TEST_NVINSPECT_FEATURE_DIRS PYTORCH_JIT=0 NVTE_TORCH_COMPILE=0 NVTE_ALLOW_NONDETERMINISTIC_ALGO=0 \
 pytest -v -s --junitxml=$XML_LOG_DIR/test_sanity_2.xml $TE_PATH/tests/pytorch/test_sanity.py --no-header"
 
 # Step 8: Numerics 2

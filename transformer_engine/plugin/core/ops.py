@@ -7,10 +7,35 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Union, Type
 from enum import IntEnum
 from contextlib import nullcontext
 import torch
+import sys
 
 from .logger_manager import get_logger
 
 logger = get_logger()
+
+# v2.20.2 native-only capabilities. Non-CUDA backends can add registered
+# implementations independently; until then their invocation is explicit.
+_NATIVE_ONLY_OPERATORS = frozenset({
+    # Target call sites use these CUDA data/layout helpers directly. Register
+    # CUDA implementations through OpManager; other backends report unsupported.
+    "copy_data_ptrs_to_device", "multi_tensor_transpose_to_bhsd",
+    "splits_to_offsets_multi", "thd_copy_valid_tokens_from_per_split_to_rank_local",
+    "thd_cp_rank_order_to_sequence_order", "thd_sequence_order_to_cp_rank_order",
+    # Query whether this CUDA build enables the optional cuBLASMp overlap path.
+    "nvte_built_with_cublasmp",
+    "cusolvermp_ctx_create", "cusolvermp_ctx_destroy", "dsituglu",
+    "ep_combine", "ep_combine_bwd", "ep_dispatch", "ep_dispatch_bwd",
+    "ep_finalize", "ep_get_zero_copy", "ep_handle_mem_size", "ep_initialize",
+    "ep_prepare", "ep_prepare_and_dispatch", "ep_zero_copy_supported",
+    "fused_moe_aux_loss_fwd_graph_safe", "fused_topk_with_score_function_qb_fwd",
+    "group_requantize_inplace", "grouped_mlp_experimental",
+    "multi_tensor_swizzle_scales_for_gemm_unchecked_", "newton_schulz",
+    "nvfp4_2d_scale_transpose", "nvfp4_group_quantize_with_amax",
+    "nvfp4_quantize_with_amax", "scaled_clamped_dswiglu",
+    "scaled_clamped_swiglu", "scaled_dsituglu", "scaled_dsrelu",
+    "scaled_dswiglu", "scaled_situglu", "scaled_srelu", "scaled_swiglu",
+    "situglu",
+})
 
 
 ################### Enums ###################
@@ -32,6 +57,21 @@ class DType(IntEnum):
 class Float8BlockScaleTensorFormat(IntEnum):
     GEMM_READY = 0
     COMPACT = 1
+    INVALID = 2
+
+
+class NVTEQBHistogramMode(IntEnum):
+    TWO_KERNEL = 0
+    FUSED_ATOMIC = 1
+
+
+class NVTEScalingMode(IntEnum):
+    NVTE_DELAYED_TENSOR_SCALING = 0
+    NVTE_MXFP8_1D_SCALING = 1
+    NVTE_BLOCK_SCALING_1D = 2
+    NVTE_BLOCK_SCALING_2D = 3
+    NVTE_NVFP4_1D_SCALING = 4
+    NVTE_INVALID_SCALING = 100
 
 
 class NVTE_Activation_Type(IntEnum):
@@ -98,7 +138,6 @@ class NVTE_Mask_Type(IntEnum):
 
 class NVTE_Fused_Attn_Backend(IntEnum):
     NVTE_No_Backend = -1
-    NVTE_F16_max512_seqlen = 0
     NVTE_F16_arbitrary_seqlen = 1
     NVTE_FP8 = 2
 
@@ -142,6 +181,7 @@ class NVTE_QKV_Layout(IntEnum):
     NVTE_Paged_KV_THD_BSHD_BSHD = 23
     NVTE_Paged_KV_THD_SBHD_SBHD = 24
     NVTE_BHSD_BHSD_BHSD = 25
+    NVTE_QKV_Layout_NOT_SET = 26
 
 
 class NVTERoutingMapFormat(IntEnum):
@@ -269,6 +309,8 @@ class FlashAttentionBase(torch.nn.Module, ABC):
         num_splits: Optional[int] = 1,
         cu_seqlens_q_padded: Optional[torch.Tensor] = None,
         cu_seqlens_kv_padded: Optional[torch.Tensor] = None,
+        softcap: float = 0.0,
+        load_balancing_strategy: Optional[Any] = None,
     ) -> torch.Tensor:
         """
         Actual forward implementation - subclasses must implement this.
@@ -305,11 +347,46 @@ class FlashAttentionBase(torch.nn.Module, ABC):
         num_splits: Optional[int] = 1,
         cu_seqlens_q_padded: Optional[torch.Tensor] = None,
         cu_seqlens_kv_padded: Optional[torch.Tensor] = None,
+        softcap: float = 0.0,
+        load_balancing_strategy: Optional[Any] = None,
     ) -> torch.Tensor:
         """
         Forward pass with automatic fallback support and caching.
         Delegates to OpManager.call_with_custom_impl for unified dispatch.
         """
+        # Extra v2.20.2 settings are forwarded only when used. Older vendor
+        # implementations keep their existing behavior for default settings.
+        extra_kwargs = {}
+        if softcap != 0.0:
+            extra_kwargs["softcap"] = softcap
+        if (load_balancing_strategy is not None and
+                getattr(load_balancing_strategy, "name", None) != "DUAL_CHUNK_SWAP"):
+            extra_kwargs["load_balancing_strategy"] = load_balancing_strategy
+
+        def supported_extra_kwargs(instance):
+            if instance.backend_name == "cuda":
+                # CUDA wraps the target v2.20.2 implementation directly.
+                return {
+                    "softcap": softcap,
+                    "load_balancing_strategy": load_balancing_strategy,
+                }
+            if extra_kwargs:
+                import inspect
+
+                signature = inspect.signature(instance._forward_impl)
+                accepts_kwargs = any(
+                    parameter.kind is inspect.Parameter.VAR_KEYWORD
+                    for parameter in signature.parameters.values()
+                )
+                unsupported = (set() if accepts_kwargs else
+                               extra_kwargs.keys() - signature.parameters.keys())
+                if unsupported:
+                    raise NotImplementedError(
+                        f"{instance.backend_name} FlashAttention does not support "
+                        f"{', '.join(sorted(unsupported))}"
+                    )
+            return extra_kwargs
+
         if self._manager is None:
             return self._forward_impl(
                 query_layer=query_layer,
@@ -338,6 +415,7 @@ class FlashAttentionBase(torch.nn.Module, ABC):
                 num_splits=num_splits,
                 cu_seqlens_q_padded=cu_seqlens_q_padded,
                 cu_seqlens_kv_padded=cu_seqlens_kv_padded,
+                **supported_extra_kwargs(self),
             )
 
         def call_impl_fn(impl_class):
@@ -369,6 +447,7 @@ class FlashAttentionBase(torch.nn.Module, ABC):
                     num_splits=num_splits,
                     cu_seqlens_q_padded=cu_seqlens_q_padded,
                     cu_seqlens_kv_padded=cu_seqlens_kv_padded,
+                    **supported_extra_kwargs(self),
                 )
             else:
                 fallback_instance = impl_class(**self._init_params)
@@ -401,6 +480,7 @@ class FlashAttentionBase(torch.nn.Module, ABC):
                     num_splits=num_splits,
                     cu_seqlens_q_padded=cu_seqlens_q_padded,
                     cu_seqlens_kv_padded=cu_seqlens_kv_padded,
+                    **supported_extra_kwargs(fallback_instance),
                 )
 
         return self._manager.call_with_custom_impl(
@@ -891,7 +971,10 @@ class TEFLBackendBase(ABC):
         quantizer: Any,
         num_tensors: int,
         first_dims: List[int],
+        last_dims: Optional[Any] = None,
         tensor_offsets: Optional[Any] = None,
+        noop_flag: Optional[torch.Tensor] = None,
+        output: Optional[Any] = None,
     ) -> Any:
         raise NotImplementedError
 
@@ -901,6 +984,7 @@ class TEFLBackendBase(ABC):
         quantizer: Any,
         num_tensors: int,
         first_dims: List[int],
+        last_dims: Optional[Any] = None,
         tensor_offsets: Optional[Any] = None,
     ) -> Any:
         raise NotImplementedError
@@ -1000,29 +1084,10 @@ class TEFLBackendBase(ABC):
     ) -> torch.Tensor:
         raise NotImplementedError
 
-    def get_fused_attn_backend(
-        self,
-        is_training: bool,
-        q_dtype: DType,
-        kv_dtype: DType,
-        qkv_layout: NVTE_QKV_Layout,
-        bias_type: NVTE_Bias_Type,
-        attn_mask_type: NVTE_Mask_Type,
-        softmax_type: NVTE_Softmax_Type,
-        p_dropout: float,
-        num_attn_heads: int,
-        num_gqa_groups: int,
-        max_seqlen_q: int,
-        max_seqlen_kv: int,
-        head_dim_qk: int,
-        head_dim_v: int,
-        window_size_left: int,
-        window_size_right: int,
-        return_max_logit: bool,
-        cuda_graph: bool = False,
-        deterministic: bool = False,
-    ) -> NVTE_Fused_Attn_Backend:
+    def get_fused_attn_backend(self, fused_attn_params: Any) -> Tuple[NVTE_Fused_Attn_Backend, str]:
+        """Select fused attention using the complete v2.20.2 attention configuration."""
         raise NotImplementedError
+
 
     def compute_amax(
         self,
@@ -1399,6 +1464,7 @@ class TEFLBackendBase(ABC):
         score_function: str,
         expert_bias: Optional[torch.Tensor],
         routing_map_format: int = 0,
+        topk_indices: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         raise NotImplementedError
 
@@ -1412,6 +1478,7 @@ class TEFLBackendBase(ABC):
         use_pre_softmax: bool,
         scaling_factor: Optional[float],
         score_function: str,
+        use_dense_indices: bool = False,
         routing_map_format: int = 0,
     ) -> torch.Tensor:
         raise NotImplementedError
@@ -1830,6 +1897,8 @@ class TEFLModule:
         # emum
         self.DType = DType
         self.Float8BlockScaleTensorFormat = Float8BlockScaleTensorFormat
+        self.NVTEQBHistogramMode = NVTEQBHistogramMode
+        self.NVTEScalingMode = NVTEScalingMode
         self.FP8FwdTensors = FP8FwdTensors
         self.FP8BwdTensors = FP8BwdTensors
         self.NVTE_Activation_Type = NVTE_Activation_Type
@@ -1856,11 +1925,33 @@ class TEFLModule:
         if name.startswith("_"):
             raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
 
+        if name == "grouped_mlp_experimental":
+            # Keep the pybind submodule shape while dispatching its operation
+            # through the same policy as every other plugin operator.
+            from types import SimpleNamespace
+
+            return SimpleNamespace(
+                swizzle_scales_and_pack_ptrs_for_discrete_weights=self.__getattr__(
+                    "grouped_mlp_experimental.swizzle_scales_and_pack_ptrs_for_discrete_weights"
+                )
+            )
+
         # Verify the operator exists before returning the bound call method
         try:
             self._manager.ensure_initialized()
             available_ops = self._manager.registry.list_operators()
             if name not in available_ops:
+                if (
+                    callable(getattr(TEFLBackendBase, name, None))
+                    or name in _NATIVE_ONLY_OPERATORS
+                    or name == "grouped_mlp_experimental.swizzle_scales_and_pack_ptrs_for_discrete_weights"
+                ):
+                    def unsupported_operator(*args, **kwargs):
+                        raise NotImplementedError(
+                            f"Operator '{name}' has no registered implementation for this backend"
+                        )
+
+                    return unsupported_operator
                 raise AttributeError(
                     f"Operator '{name}' not found. Available operators: {available_ops}"
                 )
@@ -1877,6 +1968,8 @@ class TEFLModule:
         module_attrs = [
             "DType",
             "Float8BlockScaleTensorFormat",
+            "NVTEQBHistogramMode",
+            "NVTEScalingMode",
             "FP8FwdTensors",
             "FP8BwdTensors",
             "FP8TensorMeta",
@@ -1899,7 +1992,11 @@ class TEFLModule:
         # Add operator names from OpManager's registry
         op_attrs = self._manager.registry.list_operators()
 
-        return list(set(module_attrs + op_attrs))
+        declared_ops = [
+            name for name, value in vars(TEFLBackendBase).items()
+            if not name.startswith("_") and callable(value)
+        ]
+        return list(set(module_attrs + op_attrs + declared_ops + list(_NATIVE_ONLY_OPERATORS)))
 
     def __getitem__(self, key: str):
         return self.__getattr__(key)

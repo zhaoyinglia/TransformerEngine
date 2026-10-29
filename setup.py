@@ -19,11 +19,15 @@ from build_tools.build_ext import CMakeExtension, get_build_ext
 from build_tools.te_version import te_version
 from build_tools.utils import (
     cuda_archs,
+    cuda_home_path,
     cuda_version,
+    cudnn_frontend_include_path,
     get_frameworks,
     remove_dups,
     min_python_version_str,
     nccl_ep_enabled,
+    get_max_jobs_for_parallel_build,
+    nvcc_path,
 )
 
 frameworks = get_frameworks()
@@ -114,7 +118,19 @@ class TimedBdist(bdist_wheel):
 
 def setup_common_extension() -> CMakeExtension:
     """Setup CMake extension for common library"""
-    cmake_flags = ["-DCMAKE_CUDA_ARCHITECTURES={}".format(archs)]
+    cmake_flags = [
+        "-DCMAKE_CUDA_ARCHITECTURES={}".format(archs),
+        f"-DCUDNN_FRONTEND_INCLUDE_DIR={cudnn_frontend_include_path()}",
+    ]
+
+    with_cutedsl = bool(int(os.getenv("NVTE_WITH_CUTEDSL", "0")))
+    if with_cutedsl:
+        tvm_ffi_include_dir = metadata.distribution("apache-tvm-ffi").locate_file("tvm_ffi/include")
+        cmake_flags.append(f"-DTVM_FFI_INCLUDE_DIR={tvm_ffi_include_dir}")
+        cmake_flags.append("-DNVTE_WITH_CUTEDSL=ON")
+    else:
+        cmake_flags.append("-DNVTE_WITH_CUTEDSL=OFF")
+
     if bool(int(os.getenv("NVTE_UB_WITH_MPI", "0"))):
         assert (
             os.getenv("MPI_HOME") is not None
@@ -145,6 +161,7 @@ def setup_common_extension() -> CMakeExtension:
     # NCCL EP (Hopper+): on by default; auto-skipped when no arch >= 90 is
     # targeted. Set NVTE_WITH_NCCL_EP=0 to force off.
     if nccl_ep_enabled(archs):
+        cmake_flags.append("-DNVTE_WITH_NCCL_EP=ON")
         nccl_home = build_nccl_ep_submodule()
         cmake_flags.append(f"-DNCCL_INCLUDE_DIR={nccl_home}/include")
     else:
@@ -261,16 +278,16 @@ def _discover_nccl_home() -> str:
 
 
 def build_nccl_ep_submodule() -> str:
-    """Build libnccl_ep.a from the 3rdparty/nccl submodule and return NCCL_HOME."""
-    nccl_root = current_file_path / "3rdparty" / "nccl"
-    if not (nccl_root / "Makefile").exists():
+    """Build NCCL EP libraries from 3rdparty/nccl-extensions and return NCCL_HOME."""
+    nccl_root = current_file_path / "3rdparty" / "nccl-extensions"
+    if not (nccl_root / "nccl_ep" / "Makefile").exists():
         raise RuntimeError(
-            f"NCCL submodule not found at {nccl_root}. "
+            f"NCCL EP submodule not found at {nccl_root}. "
             "Run `git submodule update --init --recursive`."
         )
 
     build_dir = nccl_root / "build"
-    nccl_ep_lib = build_dir / "lib" / "libnccl_ep.a"
+    nccl_ep_shared_lib = build_dir / "lib" / "libnccl_ep.so"
     gencode_stamp = build_dir / "lib" / "libnccl_ep.gencode"
 
     # Caller gates on arch >= 90 or "native"; expand "native" to the host's
@@ -304,8 +321,12 @@ def build_nccl_ep_submodule() -> str:
         )
     gencode = " ".join(f"-gencode=arch=compute_{a},code=sm_{a}" for a in arch_list)
 
-    nproc = os.cpu_count() or 8
+    nproc = get_max_jobs_for_parallel_build()
     env = os.environ.copy()
+    if (cuda_home := cuda_home_path()) is not None:
+        env.setdefault("CUDA_HOME", str(cuda_home))
+    if (nvcc_bin := nvcc_path()) is not None:
+        env.setdefault("NVCC", str(nvcc_bin))
     env["NVCC_GENCODE"] = gencode
     # NCCL EP needs the core NCCL headers + libnccl.so; write NCCL EP build
     # outputs to the submodule's local build/ tree.
@@ -314,20 +335,21 @@ def build_nccl_ep_submodule() -> str:
     env["NCCL_EP_BUILDDIR"] = str(build_dir)
 
     prev_gencode = gencode_stamp.read_text().strip() if gencode_stamp.exists() else None
-    if not nccl_ep_lib.exists() or prev_gencode != gencode:
-        if nccl_ep_lib.exists() and prev_gencode != gencode:
+    if not nccl_ep_shared_lib.exists() or prev_gencode != gencode:
+        if nccl_ep_shared_lib.exists() and prev_gencode != gencode:
             print(
                 f"[NCCL EP] gencode changed ('{prev_gencode}' -> '{gencode}'); "
-                "rebuilding libnccl_ep.a"
+                "rebuilding NCCL EP libraries"
             )
             subprocess.check_call(
-                ["make", "-C", "contrib/nccl_ep", "clean"],
+                ["make", "-C", "nccl_ep", "clean"],
                 cwd=str(nccl_root),
                 env=env,
             )
-        print(f"[NCCL EP] Building libnccl_ep.a (gencode='{gencode}')")
+        print(f"[NCCL EP] Building static and shared libraries (gencode='{gencode}')")
+        make_jobs = f"-j{nproc}" if nproc else "-j"
         subprocess.check_call(
-            ["make", "-j", str(nproc), "-C", "contrib/nccl_ep", "lib"],
+            ["make", make_jobs, "-C", "nccl_ep", "lib"],
             cwd=str(nccl_root),
             env=env,
         )
@@ -426,13 +448,23 @@ if __name__ == "__main__":
         # Skip CUDA build - only install Python packages for FL backend
         install_requires, test_requires = setup_requirements()
         ext_modules = []  # No CUDA extensions
-        package_data = {"": ["VERSION.txt"]}
+        package_data = {
+            "": ["VERSION.txt"],
+            # Include vendor namespace modules and runnable plugin examples
+            # that setuptools.find_packages() does not discover as packages.
+            "transformer_engine.plugin": ["core/backends/vendor/*/*.py", "examples/*.py"],
+        }
         include_package_data = True
         extras_require = {"test": test_requires}
     else:
         install_requires, test_requires = setup_requirements()
         ext_modules = [setup_common_extension()]
-        package_data = {"": ["VERSION.txt"]}
+        package_data = {
+            "": ["VERSION.txt"],
+            # Include vendor namespace modules and runnable plugin examples
+            # that setuptools.find_packages() does not discover as packages.
+            "transformer_engine.plugin": ["core/backends/vendor/*/*.py", "examples/*.py"],
+        }
         include_package_data = True
         extras_require = {"test": test_requires}
 

@@ -1,4 +1,4 @@
-# Copyright (c) 2022-2025, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# Copyright (c) 2022-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 #
 # See LICENSE for license information.
 
@@ -20,6 +20,9 @@ DEBUG_TESTS_READY=0
 : ${TE_PATH:=/opt/transformerengine}
 : ${XML_LOG_DIR:=/logs}
 mkdir -p "$XML_LOG_DIR"
+
+# Upstream v2.20.2 leaves FA4 to the dedicated attention suites.
+export NVTE_FLASH_ATTN_V4=0
 
 # The current CUDA 12.8 test container hits a fused-attention runtime loader
 # issue, so keep the distributed numerics suite on the unfused attention path.
@@ -132,7 +135,7 @@ run_test_step "pytest_test_numerics_exact.xml" "$TE_PATH/tests/pytorch/distribut
 "test_numerics_exact.py"
 # python3 -m pytest -v -s --junitxml=$XML_LOG_DIR/pytest_test_fusible_ops.xml $TE_PATH/tests/pytorch/distributed/test_fusible_ops.py || test_fail "test_fusible_ops.py"
 run_test_step "pytest_test_torch_fsdp2.xml" "$TE_PATH/tests/pytorch/distributed/test_torch_fsdp2.py" \
-"python3 -m pytest -v -s --junitxml=$XML_LOG_DIR/pytest_test_torch_fsdp2.xml $TE_PATH/tests/pytorch/distributed/test_torch_fsdp2.py -k 'not (test_distributed)'" \
+"python3 -m pytest -v -s --junitxml=$XML_LOG_DIR/pytest_test_torch_fsdp2.xml $TE_PATH/tests/pytorch/distributed/test_torch_fsdp2.py -k 'not (hybrid or test_distributed)'" \
 "test_torch_fsdp2.py"
 # python3 -m pytest -v -s --junitxml=$XML_LOG_DIR/pytest_test_comm_gemm_overlap.xml $TE_PATH/tests/pytorch/distributed/test_comm_gemm_overlap.py || test_fail "test_comm_gemm_overlap.py"
 # python3 -m pytest -v -s --junitxml=$XML_LOG_DIR/pytest_test_fusible_ops_with_userbuffers.xml $TE_PATH/tests/pytorch/distributed/test_fusible_ops_with_userbuffers.py || test_fail "test_fusible_ops_with_userbuffers.py"
@@ -163,9 +166,23 @@ else
     echo "Skipping debug test_numerics.py because nvdlfw_inspect is unavailable"
 fi
 
+
+# Additional upstream coverage and FL upgrade regression tests.
+run_test_step "pytest_test_parallel_cross_entropy.xml" "$TE_PATH/tests/pytorch/distributed/test_parallel_cross_entropy.py" \
+"python3 -m pytest -v -s --junitxml=$XML_LOG_DIR/pytest_test_parallel_cross_entropy.xml $TE_PATH/tests/pytorch/distributed/test_parallel_cross_entropy.py" "test_parallel_cross_entropy.py"
+
+run_test_step "pytest_test_cu_seqlens_cache.xml" "$TE_PATH/tests/pytorch/attention/test_cu_seqlens_cache.py" \
+"python3 -m pytest -v -s --junitxml=$XML_LOG_DIR/pytest_test_cu_seqlens_cache.xml $TE_PATH/tests/pytorch/attention/test_cu_seqlens_cache.py" "test_cu_seqlens_cache.py"
+
+run_test_step "pytest_test_newton_schulz.xml" "$TE_PATH/tests/pytorch/distributed/test_newton_schulz.py" \
+"python3 -m pytest -v -s --junitxml=$XML_LOG_DIR/pytest_test_newton_schulz.xml $TE_PATH/tests/pytorch/distributed/test_newton_schulz.py" "test_newton_schulz.py"
+
+run_test_step "pytest_test_ep.xml" "$TE_PATH/tests/pytorch/distributed/test_ep.py" \
+"python3 -m pytest -v -s --junitxml=$XML_LOG_DIR/pytest_test_ep.xml $TE_PATH/tests/pytorch/distributed/test_ep.py" "test_ep.py"
+
 if [ "$RET" -ne 0 ]; then
     echo "Error in the following test cases:$FAILED_CASES"
     exit 1
 fi
-echo "All tests passed"
+echo "All assigned tests passed (some might have been skipped)."
 exit 0

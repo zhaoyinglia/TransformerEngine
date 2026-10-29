@@ -121,13 +121,12 @@ jobs:
 
           # Run C++ lint checks
           echo "=== Running C++ Lint Checks ==="
-          bash ./qa/L0_pytorch_lint/test.sh || true
+          bash ./qa/L0_pytorch_lint/test.sh
 
           echo ""
           echo "-----------------------------------------------------"
           echo "Note: Pylint check ignores errors C0411 (incorrect import position) and W0611 (unused import), which can be achieved by adding the parameter --disable=C0411,W0611"
           echo "-----------------------------------------------------"
-        continue-on-error: true
 
       - name: PyTorch Python Lint
         # timeout-minutes: 5
@@ -141,13 +140,12 @@ jobs:
 
           # Run PyTorch lint checks
           echo "=== Running PyTorch Lint Checks ==="
-          bash ./qa/L0_pytorch_lint/test.sh || true
+          bash ./qa/L0_pytorch_lint/test.sh
 
           echo ""
           echo "-----------------------------------------------------"
           echo "Note: Pylint check ignores errors C0411 (incorrect import position) and W0611 (unused import), which can be achieved by adding the parameter --disable=C0411,W0611"
           echo "-----------------------------------------------------"
-        continue-on-error: true
 
       - name: Run L0 PyTorch Debug Unit Tests
         # timeout-minutes: 10

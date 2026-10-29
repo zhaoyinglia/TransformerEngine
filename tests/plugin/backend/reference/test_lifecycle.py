@@ -352,12 +352,9 @@ def test_dropout_and_version_stubs():
     assert backend.get_cublasLt_version() == 0
     assert backend.get_cudnn_version() == 0
     assert backend.get_num_cublas_streams() == 4
-    assert (
-        backend.get_fused_attn_backend(
-            None, None, None, None, None, None, None, 0.0, 1, 1, 1, 1, 1, 1, 0, 0, False
-        )
-        == reference_module.NVTE_Fused_Attn_Backend.NVTE_No_Backend
-    )
+    selected, reason = backend.get_fused_attn_backend(object())
+    assert selected == reference_module.NVTE_Fused_Attn_Backend.NVTE_No_Backend
+    assert reason
 
 
 # ==============================================================================

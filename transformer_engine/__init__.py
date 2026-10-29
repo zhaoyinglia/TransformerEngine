@@ -9,11 +9,13 @@
 import ctypes
 import functools
 import os
+from ctypes.util import find_library
 from importlib import metadata
+from pathlib import Path
 from typing import Optional, Tuple
 import transformer_engine.common
 
-# Minimum NCCL version for the statically-linked NCCL EP backend.
+# Minimum NCCL version for the runtime-loaded NCCL EP backend.
 _NCCL_EP_MIN_VERSION = (2, 30, 4)
 
 
@@ -32,14 +34,39 @@ def _nccl_runtime_version() -> Optional[Tuple[int, int, int]]:
     return (v // 10000, (v // 100) % 100, v % 100)
 
 
+def _nccl_ep_library_installed() -> bool:
+    if nccl_ep_home := os.getenv("NCCL_EP_HOME"):
+        home = Path(nccl_ep_home)
+        if any(
+            library.is_file()
+            for lib_dir in ("lib", "lib64")
+            for library in (home / lib_dir).glob("libnccl_ep.so*")
+        ):
+            return True
+
+    try:
+        transformer_engine.common._get_shared_object_file("nccl_ep")
+    except FileNotFoundError:
+        return find_library("nccl_ep") is not None
+    else:
+        return True
+
+
 def is_nccl_ep_available() -> bool:
-    """Return True if the runtime libnccl.so meets the NCCL EP minimum."""
+    """Return True if the NCCL EP library and a compatible NCCL runtime are available."""
+    if not _nccl_ep_library_installed():
+        return False
     cur = _nccl_runtime_version()
     return cur is not None and cur >= _NCCL_EP_MIN_VERSION
 
 
 def require_nccl_ep() -> None:
     """Raise RuntimeError if NCCL EP cannot run on the current libnccl."""
+    if not _nccl_ep_library_installed():
+        raise RuntimeError(
+            "NCCL EP library libnccl_ep.so is not installed. Build Transformer Engine "
+            "with NVTE_WITH_NCCL_EP=1."
+        )
     mn = ".".join(str(x) for x in _NCCL_EP_MIN_VERSION)
     cur = _nccl_runtime_version()
     if cur is None:
@@ -54,49 +81,45 @@ def require_nccl_ep() -> None:
         )
 
 
-import torch
-
-# Public, simple global (kept for backward compatibility).
-TE_DEVICE_TYPE = "cuda"
-TE_PLATFORM = torch.cuda
-
-# Apply MUSA (VENDOR) Patches, such as torch.cuda.device -> torch.musa.device
 try:
-    from .plugin.core.backends.vendor.musa.patches import apply_patch as _musa_apply_patch
-
-    _musa_apply_patch()
-except Exception as e:
+    import torch
+except ImportError:
     pass
+else:
+    TE_DEVICE_TYPE = "cuda"
+    TE_PLATFORM = torch.cuda
 
-# Apply TXDA (VENDOR) such as torch.cuda.device -> torch.txda.device
-try:
-    from .plugin.core.backends.vendor.tsingmicro.patches import apply_patch as _txda_apply_patch
+    for _vendor in ("musa", "tsingmicro", "npu"):
+        try:
+            from importlib import import_module
 
-    _txda_apply_patch()
-except Exception as e:
-    pass
-
-# Apply NPU (VENDOR) Patches, such as torch.cuda.device -> torch_npu.npu.device
-try:
-    from .plugin.core.backends.vendor.npu.patches import apply_patch as _npu_apply_patch
-
-    _npu_apply_patch()
-except Exception as e:
-    pass
+            import_module(
+                f"transformer_engine.plugin.core.backends.vendor.{_vendor}.patches"
+            ).apply_patch()
+        except Exception:  # pylint: disable=broad-exception-caught
+            pass
 
 
 def te_device_type(default: str = "cuda") -> str:
+    """Return the active FL device type, or the supplied default."""
+    # Direct global loads can be guarded by torch.compile; globals() cannot be traced.
     try:
         return TE_DEVICE_TYPE
-    except Exception:
+    except NameError:
         return default
 
 
-def te_platform(default=torch.cuda):
+def te_platform(default=None):
+    """Return the active FL device module, or the supplied default."""
     try:
         return TE_PLATFORM
-    except Exception:
-        return default
+    except NameError:
+        if default is not None:
+            return default
+        try:
+            return torch.cuda
+        except NameError:
+            return None
 
 
 try:

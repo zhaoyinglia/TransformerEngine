@@ -93,6 +93,15 @@ Optional Dependencies
    :Default: ``0``
    :Description: Enable NVSHMEM support. When set to ``1``, requires ``NVSHMEM_HOME`` to be set to the NVSHMEM installation directory.
 
+.. envvar:: NVTE_WITH_CUTEDSL
+
+   :Type: ``int`` (0 or 1)
+   :Default: ``0``
+   :Description: Enable CuTeDSL support when building ``libtransformer_engine.so``. When set to ``1``, requires
+                 CPython Stable ABIs from Python 3.10 and above, and ``apache-tvm-ffi`` installed.
+                 Note: when linking ``libtransformer_engine.so`` built with ``NVTE_WITH_CUTEDSL=1`` to a standalone C++ executable,
+                 you must provide the definition of these CPython symbols. See ``tests/cpp/CMakeLists.txt`` for an example.
+
 .. envvar:: NVTE_BUILD_ACTIVATION_WITH_FAST_MATH
 
    :Type: CMake option
@@ -119,14 +128,78 @@ Runtime Environment Variables
 
 These environment variables control the behavior of Transformer Engine during execution.
 
+General
+^^^^^^^
+
+.. envvar:: NVTE_TENSOR_HANDLE_POOL_SIZE_MB
+
+   :Type: ``int`` (positive integer)
+   :Default: ``20``
+   :Description: Size in MiB of the internal ``NVTETensor`` handle pool. Increase this
+                 value if an application legitimately creates more tensor handles than
+                 the default pool can hold.
+
+.. envvar:: NVTE_ENABLE_CUTEDSL_BACKEND
+
+   :Type: ``int`` (0 or 1)
+   :Default: ``0``
+   :Description: Use CuTeDSL kernel implementations when available. This requires that Transformer Engine was built with ``NVTE_WITH_CUTEDSL=1``.
+                 It also requires ``apache-tvm-ffi``, ``nvidia-cutlass-dsl`` to be installed and you are using CPython 3.10 or later.
+                 If these requirements are not met, Transformer Engine will fall back to using CUDA C++ kernels if possible.
+
+.. envvar:: NVTE_WARN_IF_CUTEDSL_BACKEND_NOT_CHOSEN
+
+   :Type: ``int`` (0 or 1)
+   :Default: ``0``
+   :Description: Warn when TE falls back to the CUDA C++ kernels instead of dispatching to available CuTeDSL kernels. Useful to verify if the CuTeDSL path is taken.
+
+.. envvar:: NVTE_GROUPED_TENSOR_HANDLE_POOL_SIZE_MB
+
+   :Type: ``int`` (positive integer)
+   :Default: ``20``
+   :Description: Size in MiB of the internal ``NVTEGroupedTensor`` handle pool. Increase
+                 this value if an application legitimately creates more grouped tensor
+                 handles than the default pool can hold.
+
 Attention Backend Selection
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Transformer Engine attention selects a backend in two stages. First, it filters the available
+backends by environment variables, GPU architecture, installed ``flash-attn`` and cuDNN versions,
+data type and FP8 recipe, training or inference mode, and the provided attention configuration.
+Then it applies a performance-based preference order among the remaining eligible backends.
+
+In PyTorch, the broad preference order is ``FlashAttention > FusedAttention >
+UnfusedDotProductAttention`` on supported pre-Hopper GPUs such as Ampere/Ada, and
+``FusedAttention > FlashAttention > UnfusedDotProductAttention`` on Hopper and newer GPUs,
+including Blackwell. In JAX, Transformer Engine uses cuDNN fused attention when
+``NVTE_FUSED_ATTN=1`` and an eligible cuDNN kernel is available; otherwise it falls back to the
+JAX-native implementation. See :doc:`examples/attention/attention` for a longer
+backend-selection overview.
 
 .. envvar:: NVTE_FLASH_ATTN
 
    :Type: ``int`` (0 or 1)
    :Default: ``1``
    :Description: Enable or disable FlashAttention backend for DotProductAttention. When set to ``0``, FlashAttention will not be used.
+
+.. envvar:: NVTE_FLASH_ATTN_V2
+
+   :Type: ``int`` (0 or 1)
+   :Default: ``1``
+   :Description: Enable or disable FlashAttention 2 (the ``flash-attn`` package) for DotProductAttention, without affecting FlashAttention 3 or 4. When set to ``0``, FlashAttention 2 will not be used even if it is installed. Useful for pinning the FlashAttention version, e.g. so training-side attention runs the same kernel generation as an inference engine.
+
+.. envvar:: NVTE_FLASH_ATTN_V3
+
+   :Type: ``int`` (0 or 1)
+   :Default: ``1``
+   :Description: Enable or disable FlashAttention 3 (the ``flash-attn-3`` package) for DotProductAttention, without affecting FlashAttention 2 or 4. When set to ``0``, FlashAttention 3 will not be used even if it is installed.
+
+.. envvar:: NVTE_FLASH_ATTN_V4
+
+   :Type: ``int`` (0 or 1)
+   :Default: ``1``
+   :Description: Enable or disable FlashAttention 4 (the ``flash-attn-4`` package) for DotProductAttention, without affecting FlashAttention 2 or 3. When set to ``0``, FlashAttention 4 will not be used even if it is installed.
 
 .. envvar:: NVTE_FUSED_ATTN
 
@@ -140,23 +213,17 @@ Attention Backend Selection
    :Default: ``1``
    :Description: Enable or disable UnfusedDotProductAttention backend (native PyTorch). When set to ``0``, UnfusedDotProductAttention will not be used.
 
-.. envvar:: NVTE_FUSED_ATTN_BACKEND
-
-   :Type: ``int`` (1 or 2)
-   :Default: Auto-selected
-   :Description: Force a specific FusedAttention backend. ``1`` = F16_arbitrary_seqlen (cuDNN, any seq len), ``2`` = FP8 backend. If not set, the backend is automatically selected based on the input configuration.
-
-.. envvar:: NVTE_FUSED_ATTN_FORCE_WORKSPACE_OPT
-
-   :Type: ``int`` (0 or 1)
-   :Default: Auto-determined
-   :Description: Control workspace-related optimizations in FusedAttention. ``0`` disables optimizations, ``1`` enables them. These optimizations trade memory for performance. When unset, Transformer Engine determines the code path based on internal logic. For deterministic behavior with cuDNN ≥8.9.5 and <9.0.0, this is automatically set to ``1``.
-
 .. envvar:: NVTE_FUSED_ATTN_USE_FAv2_BWD
 
    :Type: ``int`` (0 or 1)
    :Default: ``0``
    :Description: When using FusedAttention, use FlashAttention-2 implementation for the backward pass instead of the cuDNN implementation. This can be useful due to performance differences between various versions of flash-attn and FusedAttention.
+
+.. envvar:: NVTE_FUSED_ATTN_CACHE_DEBUG
+
+   :Type: ``int`` (0, 1 or 2), optionally followed by ``:<ranks>``
+   :Default: ``0``
+   :Description: Log FusedAttention graph cache activity to stderr, prefixed with ``[FUSED-ATTN-CACHE]``. ``1`` prints an end-of-run summary of the cache counters and the mean time of each cuDNN build stage. ``2`` additionally traces every event as it happens: each graph built, each graph cuDNN accepts and the cache keeps, each lookup and whether it hit or missed, each first execution that compiles kernels, and each execution. When the launcher exports a rank, only rank 0 logs; append ``:<ranks>`` to override, as in ``1:all`` for level 1 on every rank or ``2:0,3`` for level 2 on ranks 0 and 3.
 
 .. envvar:: NVTE_ALLOW_NONDETERMINISTIC_ALGO
 
@@ -261,13 +328,13 @@ Kernel Configuration
 
    :Type: ``int`` (0 or 1)
    :Default: ``0``
-   :Description: Enable fast math optimizations in runtime-compiled (NVRTC) kernels. This trades numerical accuracy for performance. These optimizations are experimental and inconsistently implemented.
+   :Description: Enable fast math optimizations in runtime-compiled (NVRTC / CuTeDSL) kernels. This trades numerical accuracy for performance. These optimizations are experimental and inconsistently implemented.
 
 .. envvar:: NVTE_DISABLE_NVRTC
 
    :Type: ``int`` (0 or 1)
    :Default: ``0``
-   :Description: Disable NVRTC (CUDA Runtime Compilation) support. When set to ``1``, runtime kernel compilation is disabled. This can be useful in environments where NVRTC is not available or not desired.
+   :Description: Disable NVRTC (CUDA Runtime Compilation) support. When set to ``1``, runtime kernel compilation is disabled. Existing transpose operations select their static fallback automatically. Fused softmax and normalization paths require their corresponding ``NVTE_BUILD_LEGACY_STATIC_FUSED_SOFTMAX`` or ``NVTE_BUILD_LEGACY_STATIC_NORM`` CMake option to have been enabled when the library was built; otherwise no static fallback is available.
 
 .. envvar:: NVTE_USE_CUTLASS_GROUPED_GEMM
 
@@ -318,7 +385,7 @@ Torch Compilation and Fusion
 
    :Type: ``int`` (0 or 1)
    :Default: ``1``
-   :Description: Enable PyTorch 2.x ``torch.compile`` support for compatible Transformer Engine operations. When set to ``0``, disables compilation support and uses regular PyTorch eager mode.
+   :Description: Enable Transformer Engine's internal ``torch.compile``-based kernel fusions (e.g. bias+GeLU, bias+dropout). When set to ``0``, these fusions run as separate eager operations. Does not affect compiling TE modules with ``torch.compile``.
 
 .. envvar:: NVTE_BIAS_GELU_NVFUSION
 
@@ -334,6 +401,16 @@ Torch Compilation and Fusion
 
 LayerNorm/RMSNorm SM Margins
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+.. envvar:: NVTE_CUDNN_MXFP8_NORM_OUTPUT_IN_INPUT_DTYPE
+
+   :Type: ``int`` (0 or 1)
+   :Default: ``0``
+   :Description: With cuDNN 9.25.0 or later, use the normalization input datatype for the virtual
+                 LayerNorm/RMSNorm output consumed by cuDNN MXFP8 block-scale quantization. This
+                 enables cuDNN's fused MXFP8 normalization engine, which requires matching FP16 or
+                 BF16 input and normalization-output datatypes. When set to ``0``, or with an
+                 earlier cuDNN version, the virtual normalization output uses FP32.
 
 .. envvar:: NVTE_FWD_LAYERNORM_SM_MARGIN
 
