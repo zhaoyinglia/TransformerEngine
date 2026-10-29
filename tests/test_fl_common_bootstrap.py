@@ -1,5 +1,6 @@
 """CPU regressions for FL common initialization, without loading CUDA libraries."""
 
+import ast
 import importlib.util
 from importlib.machinery import ModuleSpec
 from pathlib import Path
@@ -15,6 +16,16 @@ def common(monkeypatch):
     monkeypatch.setenv("NVTE_RELEASE_BUILD", "0")
     monkeypatch.setenv("TE_FL_SKIP_CUDA", "0")
     monkeypatch.delenv("NVTE_PLUGIN", raising=False)
+    # Isolate early FL registration from real hardware discovery.
+    parent = ModuleType("transformer_engine")
+    parent.__path__ = []
+    plugin = ModuleType("transformer_engine.plugin")
+    plugin.__path__ = []
+    core = ModuleType("transformer_engine.plugin.core")
+    parent.plugin = plugin
+    plugin.core = core
+    for module in (parent, plugin, core):
+        monkeypatch.setitem(sys.modules, module.__name__, module)
     path = Path(__file__).resolve().parents[1] / "transformer_engine/common/__init__.py"
     spec = importlib.util.spec_from_file_location("_fl_common_review", path)
     module = importlib.util.module_from_spec(spec)
@@ -60,6 +71,7 @@ def loader(common, monkeypatch):
 
     monkeypatch.setattr(common, "_get_shared_object_file", lambda framework: Path("native.so"))
     monkeypatch.setattr(common.importlib.util, "spec_from_file_location", lambda name, path: ModuleSpec(name, NativeLoader()))
+    sys.modules["transformer_engine_torch"] = stub
     state.stub = stub
     state.core = core
     return state
@@ -73,23 +85,18 @@ def test_native_and_fl_aliases_are_stable(common, loader):
     assert loader.loads == 1
 
 
-@pytest.mark.parametrize("failure", ["exec", "cudnn", "plugin"])
+@pytest.mark.parametrize("failure", ["exec", "cudnn"])
 def test_failed_initialization_can_retry(common, loader, failure):
     if failure == "exec":
         loader.error = ImportError("broken native load")
     elif failure == "cudnn":
         loader.version = 91100
-    else:
-        def broken_plugin():
-            raise ImportError("broken FL initialization")
-        loader.core.get_tefl_module = broken_plugin
     with pytest.raises((ImportError, RuntimeError)):
         common.load_framework_extension("torch")
-    assert "transformer_engine_torch" not in sys.modules
+    assert sys.modules["transformer_engine_torch"] is loader.stub
     assert "transformer_engine_torch_nv" not in sys.modules
     loader.error = None
     loader.version = 91300
-    loader.core.get_tefl_module = lambda: loader.stub
     common.load_framework_extension("torch")
     assert sys.modules["transformer_engine_torch"] is loader.stub
 
@@ -155,3 +162,37 @@ def test_split_install_version_check_is_preserved(common, loader, monkeypatch):
     monkeypatch.setattr(common, "version", lambda name: "2.20.2")
     with pytest.raises(AssertionError, match="version mismatch"):
         common.sanity_checks_for_pypi_installation()
+
+
+def test_preimported_native_is_validated_without_replacing_public(common, loader):
+    native = ModuleType("transformer_engine_torch_nv")
+    native.get_cudnn_version = lambda: 91100
+    sys.modules["transformer_engine_torch_nv"] = native
+    with pytest.raises(RuntimeError, match="cuDNN"):
+        common.load_framework_extension("torch_nv")
+    assert sys.modules["transformer_engine_torch"] is loader.stub
+    native.get_cudnn_version = lambda: 91300
+    common.load_framework_extension("torch_nv")
+    assert loader.loads == 0
+    assert sys.modules["transformer_engine_torch_nv"] is native
+
+
+def test_loader_uses_real_nv_module_name(common, loader):
+    common.load_framework_extension("torch_nv")
+    assert loader.native.__name__ == "transformer_engine_torch_nv"
+    assert sys.modules["transformer_engine_torch"] is loader.stub
+
+
+def test_cuda_discovery_respects_runtime_disable(common, monkeypatch):
+    # Exercise the discovery predicate without importing a real CUDA backend.
+    path = Path(__file__).resolve().parents[1] / "transformer_engine/plugin/core/backends/vendor/cuda/cuda.py"
+    tree = ast.parse(path.read_text())
+    predicate = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "_check_cuda_available")
+    code = compile(ast.Module(body=[predicate], type_ignores=[]), str(path), "exec")
+    monkeypatch.setitem(sys.modules, "transformer_engine.common", common)
+    monkeypatch.setenv("TE_FL_SKIP_CUDA", "1")
+    def forbidden():
+        pytest.fail("disabled CUDA backend attempted native library loading")
+    namespace = {"torch": SimpleNamespace(cuda=SimpleNamespace(is_available=lambda: True)), "_ensure_cuda_libs": forbidden}
+    exec(code, namespace)
+    assert namespace["_check_cuda_available"]() is False

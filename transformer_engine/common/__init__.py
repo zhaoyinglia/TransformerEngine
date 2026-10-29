@@ -35,6 +35,10 @@ def skip_cuda_build() -> bool:
     return bool(runpy.run_path(str(config_path))["SKIP_CUDA_BUILD"]) if config_path.is_file() else False
 
 
+# Preserve the FL public module registration before framework imports.
+import transformer_engine.plugin.core  # noqa: F401  # pylint: disable=wrong-import-position
+
+
 def decode_cudnn_version(encoded_version: int) -> Tuple[int, int, int]:
     """Decode a cudnnGetVersion() result into (major, minor, patch)."""
     major_version_magnitude = 1000 if encoded_version < 90000 else 10000
@@ -142,7 +146,7 @@ def _get_shared_object_file(library: str) -> Path:
     """
 
     # Check provided input and determine the correct prefix for .so.
-    assert library in ("core", "torch", "jax", "nccl_ep"), f"Unsupported TE library {library}."
+    assert library in ("core", "torch_nv", "jax", "nccl_ep"), f"Unsupported TE library {library}."
     if library == "core":
         so_prefix = "libtransformer_engine"
     elif library == "nccl_ep":
@@ -182,104 +186,65 @@ def get_te_core_package_info() -> Tuple[bool, str, str]:
 
 @functools.lru_cache(maxsize=None)
 def load_framework_extension(framework: str) -> None:
-    """
-    Load shared library with Transformer Engine framework bindings
-    and check verify correctness if installed via PyPI.
-    """
-
-    # Supported frameworks.
-    assert framework in ("jax", "torch"), f"Unsupported framework {framework}"
-
+    """Load native bindings without replacing the FL public PyTorch module."""
+    assert framework in ("jax", "torch_nv", "torch"), f"Unsupported framework {framework}"
     if skip_cuda_build():
-        if framework == "torch":
-            # In an FL-only build the Python plugin supplies the extension API.
-            import transformer_engine.plugin.core  # pylint: disable=unused-import,import-outside-toplevel
         return
 
-    # Name of the framework extension library.
-    module_name = f"transformer_engine_{framework}"
-
-    # The package initializer may have loaded the extension before PyTorch imports.
-    if module_name in sys.modules:
-        return
-
-    # Name of the pip extra dependency for framework extensions from PyPI.
-    extra_dep_name = module_name
-    if framework == "torch":
-        extra_dep_name = "pytorch"
-
-    # Find the TE packages. The core and framework packages can only be installed via PyPI.
-    # For the `transformer-engine` package, we need to check explicity.
+    # Keep the original FL native module name; accept upstream callers too.
+    is_torch = framework in ("torch", "torch_nv")
+    library = "torch_nv" if is_torch else framework
+    module_name = f"transformer_engine_{library}"
+    package_name = "transformer_engine_torch" if is_torch else module_name
+    extra_dep_name = "pytorch" if is_torch else package_name
     te_core_installed, te_core_package_name, te_core_version = get_te_core_package_info()
-    te_framework_installed = _is_package_installed(module_name)
-    te_installed = _is_package_installed("transformer_engine")
-    te_installed_via_pypi = _is_package_installed_from_wheel("transformer_engine")
-
-    assert te_installed, "Could not find `transformer_engine`."
-
-    # If the framework extension pip package is installed, it means that TE is installed via
-    # PyPI. For this case we need to make sure that the metapackage, the core lib, and framework
-    # extension are all installed via PyPI and have matching versions.
-    if te_framework_installed:
-        assert te_installed_via_pypi, "Could not find `transformer-engine` PyPI package."
+    assert _is_package_installed("transformer_engine"), "Could not find `transformer_engine`."
+    if _is_package_installed(package_name):
+        assert _is_package_installed_from_wheel("transformer_engine"), (
+            "Could not find `transformer-engine` PyPI package."
+        )
         assert te_core_installed, "Could not find TE core package `transformer-engine-cu*`."
-
-        assert version(module_name) == version("transformer-engine") == te_core_version, (
+        assert version(package_name) == version("transformer-engine") == te_core_version, (
             "Transformer Engine package version mismatch. Found"
-            f" {module_name} v{version(module_name)}, transformer-engine"
+            f" {package_name} v{version(package_name)}, transformer-engine"
             f" v{version('transformer-engine')}, and {te_core_package_name}"
             f" v{te_core_version}. Install transformer-engine using "
             f"'pip3 install --no-build-isolation transformer-engine[{extra_dep_name}]==VERSION'"
         )
 
-    # After all checks are completed, load the shared object file.
-    spec = importlib.util.spec_from_file_location(module_name, _get_shared_object_file(framework))
-    solib = importlib.util.module_from_spec(spec)
-    native_alias = module_name + "_nv"
-    previous_native = sys.modules.get(native_alias)
-    sys.modules[module_name] = solib
-    try:
-        spec.loader.exec_module(solib)
+    # Backend discovery may already have imported the native _nv module.
+    # Still perform the upstream cuDNN validation on that path.
+    solib = sys.modules.get(module_name)
+    if solib is None:
+        spec = importlib.util.spec_from_file_location(module_name, _get_shared_object_file(library))
+        solib = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = solib
+        try:
+            spec.loader.exec_module(solib)
+            check_cudnn_version(solib.get_cudnn_version())
+        except Exception:
+            sys.modules.pop(module_name, None)
+            raise
+    else:
         check_cudnn_version(solib.get_cudnn_version())
 
-        if framework == "torch":
-            # Register native code before FL backend discovery. Keep FL as the
-            # fallback even when an optional external plugin is requested.
-            sys.modules[native_alias] = solib
-            import transformer_engine.plugin.core as plugin_core  # pylint: disable=import-outside-toplevel
-
-            sys.modules[module_name] = plugin_core.get_tefl_module()
-    except Exception:
-        # A failed load must not satisfy the already-loaded guard on retry.
-        sys.modules.pop(module_name, None)
-        if framework == "torch":
-            if previous_native is None:
-                sys.modules.pop(native_alias, None)
-            else:
-                sys.modules[native_alias] = previous_native
-        raise
-
-    # Plugin system: set NVTE_PLUGIN=<module_name> to let plugin stub take over
-    # transformer_engine_torch and register original pybind as _nv for CUDA backend.
-    # Only applies to the PyTorch extension — JAX has no plugin stub.
-    _nvte_plugin = os.environ.get("NVTE_PLUGIN")
-    if _nvte_plugin and framework == "torch":
-        _original_module = sys.modules.get(module_name)
+    # Optional upstream plugin entrypoint. The default FL public registration
+    # is already in place; only an explicitly selected plugin may replace it.
+    plugin_name = os.environ.get("NVTE_PLUGIN")
+    if plugin_name and is_torch:
+        public_name = "transformer_engine_torch"
+        original_module = sys.modules.get(public_name)
         try:
-            # Register _nv alias BEFORE importing the plugin, because the
-            # plugin module may import transformer_engine_torch_nv at top level.
-            sys.modules[module_name + "_nv"] = solib
-            _plugin = importlib.import_module(_nvte_plugin)
-            _plugin.load_plugins()
-        except Exception as e:  # pylint: disable=broad-exception-caught
-            # Rollback to pre-plugin state if plugin failed to fully initialize
-            sys.modules[module_name + "_nv"] = solib
-            if _original_module is not None:
-                sys.modules[module_name] = _original_module
+            plugin = importlib.import_module(plugin_name)
+            plugin.load_plugins()
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            sys.modules[module_name] = solib
+            if original_module is None:
+                sys.modules.pop(public_name, None)
             else:
-                sys.modules.pop(module_name, None)
+                sys.modules[public_name] = original_module
             warnings.warn(
-                f"NVTE_PLUGIN={_nvte_plugin} but plugin loading failed: {e}",
+                f"NVTE_PLUGIN={plugin_name} but plugin loading failed: {exc}",
                 RuntimeWarning,
                 stacklevel=2,
             )

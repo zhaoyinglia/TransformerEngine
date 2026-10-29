@@ -96,18 +96,12 @@ def _check_cuda_available() -> bool:
     if not torch.cuda.is_available():
         return False
 
-    import os
+    # Match common's build metadata and runtime override before importing the
+    # real _nv extension, including discovery that bypasses vendor.__init__.
+    from transformer_engine.common import skip_cuda_build
 
-    try:
-        from ...._build_config import SKIP_CUDA_BUILD
-
-        if SKIP_CUDA_BUILD:
-            print("[CUDA] Disabled: CUDA was skipped at build time")
-            return False
-    except ImportError:
-        if bool(int(os.environ.get("TE_FL_SKIP_CUDA", "0"))):
-            print("[CUDA] Disabled: TE_FL_SKIP_CUDA=1")
-            return False
+    if skip_cuda_build():
+        return False
 
     try:
         if not _ensure_cuda_libs():
