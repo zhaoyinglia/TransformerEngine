@@ -111,3 +111,21 @@ def test_nvfp4_group_preserves_pybind_positional_order():
     values = tuple(object() for _ in range(8))
     backend.nvfp4_group_quantize_with_amax(*values)
     assert calls == [(values, {})]
+
+
+@pytest.mark.parametrize("use_output_buffer", [False, True])
+def test_cuda_swap_first_dims_uses_keyword_output_buffer(use_output_buffer):
+    from transformer_engine.plugin.core.backends.vendor.cuda.cuda import CUDABackend
+
+    tensor = object()
+    output = object() if use_output_buffer else None
+    result = object()
+
+    def native(value, *, out):
+        assert value is tensor
+        assert out is output
+        return result
+
+    backend = CUDABackend()
+    backend._get_tex = lambda: SimpleNamespace(swap_first_dims=native)
+    assert backend.swap_first_dims(tensor, output) is result

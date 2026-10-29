@@ -750,7 +750,7 @@ class CUDABackend(TEFLBackendBase):
         out: Optional[torch.Tensor],
     ) -> torch.Tensor:
         tex = self._get_tex()
-        return tex.swap_first_dims(tensor, out)
+        return tex.swap_first_dims(tensor, out=out)
 
     def nvfp4_data_transpose(
         self,

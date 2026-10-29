@@ -109,14 +109,24 @@ else:
 
 def te_device_type(default: str = "cuda") -> str:
     """Return the active FL device type, or the supplied default."""
-    return globals().get("TE_DEVICE_TYPE", default)
+    # Direct global loads can be guarded by torch.compile; globals() cannot be traced.
+    try:
+        return TE_DEVICE_TYPE
+    except NameError:
+        return default
 
 
 def te_platform(default=None):
     """Return the active FL device module, or the supplied default."""
-    if default is None and "torch" in globals():
-        default = torch.cuda
-    return globals().get("TE_PLATFORM", default)
+    try:
+        return TE_PLATFORM
+    except NameError:
+        if default is not None:
+            return default
+        try:
+            return torch.cuda
+        except NameError:
+            return None
 
 
 try:

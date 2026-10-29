@@ -41,6 +41,16 @@ from transformer_engine.pytorch.constants import NVFP4_BLOCK_SCALING_SIZE
 from transformer_engine.pytorch.distributed import gather_along_first_dim
 from run_layer_with_overlap import _compare_tensors
 
+# Fullgraph Linear uses the same opaque-object APIs as test_torch_compile.py.
+# Keep eager distributed numerics runnable on PyTorch builds without them.
+try:
+    from torch._opaque_base import OpaqueBaseMeta
+    from torch._library.opaque_object import get_opaque_type_name, register_custom_class, MemberType
+
+    _opaque_available = True
+except ImportError:
+    _opaque_available = False
+
 SEQ_LEN, BATCH_SIZE = 16, 16
 HIDDEN_SIZE = 64
 NR_HEADS = 4
@@ -806,6 +816,12 @@ def test_linear():
         ):
             continue
         if kwargs.get("use_compile", False) and QUANTIZATION == "fp8":
+            continue
+        if kwargs.get("use_compile", False) and not _opaque_available:
+            dist_print(
+                f"[SKIP] compiled Linear configuration {kwargs}: "
+                "this PyTorch build lacks the required opaque-object APIs"
+            )
             continue
         for parallel_mode in ["column", "row"]:
             for sequence_parallel in [False, True]:
