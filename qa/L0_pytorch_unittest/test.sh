@@ -348,6 +348,10 @@ run_test_step "pytest_test_grouped_mlp.xml" "$TE_PATH/tests/pytorch/test_grouped
 run_test_step "pytest_v220_api.xml" "$PLUGIN_TEST_ROOT/plugin/test_v220_api_contract.py" \
 "python3 -m pytest --junitxml=$XML_LOG_DIR/pytest_v220_api.xml $PLUGIN_TEST_ROOT/plugin/test_v220_api_contract.py $PLUGIN_TEST_ROOT/plugin/test_vendor_compat.py $PLUGIN_TEST_ROOT/plugin/test_device_helpers.py" "v2.20.2 API contract"
 
+# Common bootstrap regressions run without native CUDA dependencies.
+run_test_step "pytest_fl_common_bootstrap.xml" "$TE_PATH/tests/test_fl_common_bootstrap.py" \
+"python3 -m pytest --junitxml=$XML_LOG_DIR/pytest_fl_common_bootstrap.xml $TE_PATH/tests/test_fl_common_bootstrap.py" "FL common bootstrap"
+
 if [ "$FAIL" -ne 0 ]; then
     echo "Some tests failed."
     exit 1

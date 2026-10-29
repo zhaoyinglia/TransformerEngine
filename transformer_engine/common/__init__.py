@@ -28,7 +28,7 @@ MIN_CUDNN_VERSION = (9, 12, 0)
 def skip_cuda_build() -> bool:
     """Return whether the FL installation omits native CUDA libraries."""
     value = os.environ.get("TE_FL_SKIP_CUDA")
-    if value is not None:
+    if value:
         return bool(int(value))
     # Read build metadata without importing plugin.core while common initializes.
     config_path = Path(__file__).resolve().parent.parent / "plugin/core/_build_config.py"
@@ -235,20 +235,29 @@ def load_framework_extension(framework: str) -> None:
     # After all checks are completed, load the shared object file.
     spec = importlib.util.spec_from_file_location(module_name, _get_shared_object_file(framework))
     solib = importlib.util.module_from_spec(spec)
+    native_alias = module_name + "_nv"
+    previous_native = sys.modules.get(native_alias)
     sys.modules[module_name] = solib
-    spec.loader.exec_module(solib)
+    try:
+        spec.loader.exec_module(solib)
+        check_cudnn_version(solib.get_cudnn_version())
 
-    # Check if the cuDNN version is supported.
-    check_cudnn_version(solib.get_cudnn_version())
+        if framework == "torch":
+            # Register native code before FL backend discovery. Keep FL as the
+            # fallback even when an optional external plugin is requested.
+            sys.modules[native_alias] = solib
+            import transformer_engine.plugin.core as plugin_core  # pylint: disable=import-outside-toplevel
 
-    if framework == "torch":
-        # CUDA backend registrations need the native module under this alias.
-        # Importing the built-in plugin after loading native code retains both.
-        sys.modules[module_name + "_nv"] = solib
-        import transformer_engine.plugin.core as plugin_core  # pylint: disable=import-outside-toplevel
-
-        if not os.environ.get("NVTE_PLUGIN"):
             sys.modules[module_name] = plugin_core.get_tefl_module()
+    except Exception:
+        # A failed load must not satisfy the already-loaded guard on retry.
+        sys.modules.pop(module_name, None)
+        if framework == "torch":
+            if previous_native is None:
+                sys.modules.pop(native_alias, None)
+            else:
+                sys.modules[native_alias] = previous_native
+        raise
 
     # Plugin system: set NVTE_PLUGIN=<module_name> to let plugin stub take over
     # transformer_engine_torch and register original pybind as _nv for CUDA backend.
@@ -264,7 +273,7 @@ def load_framework_extension(framework: str) -> None:
             _plugin.load_plugins()
         except Exception as e:  # pylint: disable=broad-exception-caught
             # Rollback to pre-plugin state if plugin failed to fully initialize
-            sys.modules.pop(module_name + "_nv", None)
+            sys.modules[module_name + "_nv"] = solib
             if _original_module is not None:
                 sys.modules[module_name] = _original_module
             else:
@@ -277,7 +286,10 @@ def load_framework_extension(framework: str) -> None:
 
 
 def sanity_checks_for_pypi_installation() -> None:
-    """Ensure that package is installed correctly if using PyPI."""
+    """Validate split PyPI installs while accepting complete FL distributions."""
+
+    if skip_cuda_build():
+        return
 
     te_core_installed, te_core_package_name, te_core_version = get_te_core_package_info()
     te_installed = _is_package_installed("transformer_engine")
@@ -296,6 +308,14 @@ def sanity_checks_for_pypi_installation() -> None:
 
     # Only the metapackage is found, invalid usecase.
     elif te_installed_via_pypi:
+        # FL source-built wheels can bundle core and framework libraries in
+        # one distribution, without a separate transformer-engine-cu* package.
+        try:
+            _get_shared_object_file("core")
+        except FileNotFoundError:
+            pass
+        else:
+            return
         raise RuntimeError(
             "Found empty `transformer-engine` meta package installed. "
             "Install `transformer-engine` with framework extensions via"
@@ -516,21 +536,7 @@ def _load_core_library():
 
 
 if "NVTE_PROJECT_BUILDING" not in os.environ or bool(int(os.getenv("NVTE_RELEASE_BUILD", "0"))):
-    # The FL no-CUDA wheel is a complete Python distribution without a
-    # separate transformer-engine-cu12/13 package. The upstream PyPI
-    # metapackage check would misidentify it as an empty metapackage.
-    if not skip_cuda_build():
-        # FL can install its core and PyTorch extension together. If the
-        # extension was built locally, it is a complete package rather than
-        # the empty upstream metapackage. Still validate split PyPI installs.
-        split_core_installed, _, _ = get_te_core_package_info()
-        if split_core_installed:
-            sanity_checks_for_pypi_installation()
-        else:
-            try:
-                _get_shared_object_file("core")
-            except FileNotFoundError:
-                sanity_checks_for_pypi_installation()
+    sanity_checks_for_pypi_installation()
 
     # `_load_cuda_library` is used for packages that must be loaded
     # during runtime. Both system and pypi packages are searched
