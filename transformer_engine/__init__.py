@@ -89,6 +89,12 @@ else:
     TE_DEVICE_TYPE = "cuda"
     TE_PLATFORM = torch.cuda
 
+    # Establish the native alias and FL dispatch before vendor patch imports.
+    try:
+        transformer_engine.common.load_framework_extension("torch")
+    except (ImportError, FileNotFoundError):
+        pass
+
     for _vendor in ("musa", "tsingmicro", "npu"):
         try:
             from importlib import import_module

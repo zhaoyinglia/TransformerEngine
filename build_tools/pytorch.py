@@ -117,10 +117,8 @@ def setup_pytorch_extension(
     include_dirs = [str(path) for path in include_dirs]
     from torch.utils.cpp_extension import CppExtension
 
-    # Use transformer_engine_torch_nv as the native NVIDIA module name
-    # This allows the plugin system to use transformer_engine_torch as the unified interface
     return CppExtension(
-        name="transformer_engine_torch_nv",
+        name="transformer_engine_torch",
         sources=[str(src) for src in sources],
         include_dirs=[str(inc) for inc in include_dirs],
         extra_compile_args={"cxx": cxx_flags},

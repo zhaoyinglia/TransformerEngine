@@ -16,7 +16,7 @@ def common(monkeypatch):
     monkeypatch.setenv("NVTE_RELEASE_BUILD", "0")
     monkeypatch.setenv("TE_FL_SKIP_CUDA", "0")
     monkeypatch.delenv("NVTE_PLUGIN", raising=False)
-    # Isolate early FL registration from real hardware discovery.
+    # Isolate FL registration from real hardware discovery.
     parent = ModuleType("transformer_engine")
     parent.__path__ = []
     plugin = ModuleType("transformer_engine.plugin")
@@ -71,33 +71,37 @@ def loader(common, monkeypatch):
 
     monkeypatch.setattr(common, "_get_shared_object_file", lambda framework: Path("native.so"))
     monkeypatch.setattr(common.importlib.util, "spec_from_file_location", lambda name, path: ModuleSpec(name, NativeLoader()))
-    sys.modules["transformer_engine_torch"] = stub
     state.stub = stub
     state.core = core
     return state
 
 
 def test_native_and_fl_aliases_are_stable(common, loader):
-    common.load_framework_extension("torch_nv")
+    common.load_framework_extension("torch")
     assert sys.modules["transformer_engine_torch"] is loader.stub
     assert sys.modules["transformer_engine_torch_nv"] is loader.native
-    common.load_framework_extension("torch_nv")
+    common.load_framework_extension("torch")
     assert loader.loads == 1
 
 
-@pytest.mark.parametrize("failure", ["exec", "cudnn"])
+@pytest.mark.parametrize("failure", ["exec", "cudnn", "fl_setup"])
 def test_failed_initialization_can_retry(common, loader, failure):
     if failure == "exec":
         loader.error = ImportError("broken native load")
     elif failure == "cudnn":
         loader.version = 91100
+    elif failure == "fl_setup":
+        def broken_setup():
+            raise ImportError("FL setup failed")
+        loader.core.get_tefl_module = broken_setup
     with pytest.raises((ImportError, RuntimeError)):
-        common.load_framework_extension("torch_nv")
-    assert sys.modules["transformer_engine_torch"] is loader.stub
+        common.load_framework_extension("torch")
+    assert "transformer_engine_torch" not in sys.modules
     assert "transformer_engine_torch_nv" not in sys.modules
     loader.error = None
     loader.version = 91300
-    common.load_framework_extension("torch_nv")
+    loader.core.get_tefl_module = lambda: loader.stub
+    common.load_framework_extension("torch")
     assert sys.modules["transformer_engine_torch"] is loader.stub
 
 
@@ -116,17 +120,19 @@ def test_external_plugin_retains_native_alias(common, loader, monkeypatch, failu
     monkeypatch.setenv("NVTE_PLUGIN", external.__name__)
     if failure:
         with pytest.warns(RuntimeWarning, match="external setup failed"):
-            common.load_framework_extension("torch_nv")
+            common.load_framework_extension("torch")
     else:
-        common.load_framework_extension("torch_nv")
+        common.load_framework_extension("torch")
     assert sys.modules["transformer_engine_torch_nv"] is loader.native
     assert sys.modules["transformer_engine_torch"] is (loader.stub if failure else replacement)
 
 
-def test_empty_override_uses_build_metadata(common, monkeypatch):
-    config = ModuleType("transformer_engine.plugin.core._build_config")
-    config.SKIP_CUDA_BUILD = True
-    monkeypatch.setitem(sys.modules, config.__name__, config)
+def test_empty_override_uses_build_metadata(common, monkeypatch, tmp_path):
+    root = tmp_path / "transformer_engine"
+    (root / "common").mkdir(parents=True)
+    (root / "plugin/core").mkdir(parents=True)
+    (root / "plugin/core/_build_config.py").write_text("SKIP_CUDA_BUILD = True\n")
+    monkeypatch.setattr(common, "__file__", str(root / "common/__init__.py"))
     monkeypatch.setenv("TE_FL_SKIP_CUDA", "")
     assert common.skip_cuda_build() is True
     monkeypatch.setenv("TE_FL_SKIP_CUDA", "0")
@@ -139,7 +145,7 @@ def test_no_cuda_skips_native_and_install_checks(common, loader, monkeypatch):
         pytest.fail("no-CUDA build queried split CUDA packages")
     monkeypatch.setattr(common, "get_te_core_package_info", forbidden)
     common.sanity_checks_for_pypi_installation()
-    common.load_framework_extension("torch_nv")
+    common.load_framework_extension("torch")
     assert loader.loads == 0
 
 
@@ -163,21 +169,22 @@ def test_split_install_version_check_is_preserved(common, loader, monkeypatch):
 
 
 def test_preimported_native_is_validated_without_replacing_public(common, loader):
-    native = ModuleType("transformer_engine_torch_nv")
+    native = ModuleType("transformer_engine_torch")
     native.get_cudnn_version = lambda: 91100
-    sys.modules["transformer_engine_torch_nv"] = native
+    sys.modules["transformer_engine_torch"] = native
     with pytest.raises(RuntimeError, match="cuDNN"):
-        common.load_framework_extension("torch_nv")
-    assert sys.modules["transformer_engine_torch"] is loader.stub
+        common.load_framework_extension("torch")
+    assert sys.modules["transformer_engine_torch"] is native
     native.get_cudnn_version = lambda: 91300
-    common.load_framework_extension("torch_nv")
+    common.load_framework_extension("torch")
     assert loader.loads == 0
     assert sys.modules["transformer_engine_torch_nv"] is native
 
 
-def test_loader_uses_real_nv_module_name(common, loader):
-    common.load_framework_extension("torch_nv")
-    assert loader.native.__name__ == "transformer_engine_torch_nv"
+def test_loader_preserves_native_under_nv_alias(common, loader):
+    common.load_framework_extension("torch")
+    assert loader.native.__name__ == "transformer_engine_torch"
+    assert sys.modules["transformer_engine_torch_nv"] is loader.native
     assert sys.modules["transformer_engine_torch"] is loader.stub
 
 
@@ -194,3 +201,13 @@ def test_cuda_discovery_respects_runtime_disable(common, monkeypatch):
     namespace = {"torch": SimpleNamespace(cuda=SimpleNamespace(is_available=lambda: True)), "_ensure_cuda_libs": forbidden}
     exec(code, namespace)
     assert namespace["_check_cuda_available"]() is False
+
+
+def test_native_alias_exists_before_fl_setup(common, loader):
+    def setup():
+        assert sys.modules["transformer_engine_torch_nv"] is loader.native
+        assert sys.modules["transformer_engine_torch"] is loader.native
+        return loader.stub
+    loader.core.get_tefl_module = setup
+    common.load_framework_extension("torch")
+    assert sys.modules["transformer_engine_torch"] is loader.stub
