@@ -11,6 +11,16 @@ import torch.distributed
 import transformer_engine_torch as tex
 
 
+class CPLoadBalancingStrategy(enum.Enum):
+    """Token partition strategy for context-parallel attention.
+
+    ``NO_LOAD_BALANCE`` is experimental.
+    """
+
+    DUAL_CHUNK_SWAP = "dual_chunk_swap"
+    NO_LOAD_BALANCE = "no_load_balance"
+
+
 class DType(enum.IntEnum):
     """Transformer Engine data types used to tag tensors passed to the
     Transformer Engine backend.
@@ -78,17 +88,11 @@ class DType(enum.IntEnum):
         return int.__hash__(self)
 
 
-# Fail fast at import time if a python enumerator is not backed by the
-# C++/backend ``DType``.
-# NOTE(FlagScale): upstream asserts strict set equality between the python
-# ``DType`` and ``transformer_engine_torch.DType``. In the plugin build,
-# ``transformer_engine_torch`` is a dispatch module whose ``DType`` mirrors the
-# full C++ enum (``transformer_engine.h``) and may expose additional backend
-# members (e.g. kInt16, kInt64, kFloat8E8M0, kNumTypes) that the pytorch-facing
-# enum above intentionally does not surface. A subset check preserves the
-# original fail-fast intent (a python member with no backend backing) while
-# tolerating the plugin's superset.
-assert {m.name for m in DType} <= set(tex.DType.__members__), (
+# Fail fast at import time if a new enumerator is added
+# on the C++ side without being mirrored above.
+assert {m.name for m in DType}.issubset(tex.DType.__members__) and all(
+    int(member) == int(getattr(tex.DType, member.name)) for member in DType
+), (
     "DType in python is out of sync with transformer_engine_torch.DType; "
     "defined in C++ side. Please make sure TE C++ and python are in sync."
 )

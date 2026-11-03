@@ -9,15 +9,36 @@
 import functools
 
 import torch
+import transformer_engine
 
-from transformer_engine.common import load_framework_extension
+from transformer_engine.plugin.bootstrap import load_pytorch_extension
 from transformer_engine.pytorch.torch_version import torch_version
 
 assert torch_version() >= (2, 1), f"Minimum torch version 2.1 required. Found {torch_version()}."
 
-load_framework_extension("torch_nv")
+load_pytorch_extension()
+
+# Device type and platform globals — live here because torch cannot be imported
+# at the top-level transformer_engine package (shared with JAX).
+# Use plugin-set values if available, otherwise fall back to CUDA defaults.
+transformer_engine.TE_DEVICE_TYPE = getattr(transformer_engine, "TE_DEVICE_TYPE", "cuda")
+transformer_engine.TE_PLATFORM = getattr(transformer_engine, "TE_PLATFORM", torch.cuda)
+
+
+def te_device_type() -> str:
+    """Torch device type used by Transformer Engine, e.g. `cuda`."""
+    return transformer_engine.TE_DEVICE_TYPE
+
+
+def te_platform():
+    """Torch device module used by Transformer Engine, e.g. `torch.cuda`."""
+    return transformer_engine.TE_PLATFORM
+
+
+transformer_engine.te_device_type = te_device_type
+transformer_engine.te_platform = te_platform
 from transformer_engine.pytorch import constants
-from transformer_engine.pytorch.constants import DType
+from transformer_engine.pytorch.constants import CPLoadBalancingStrategy, DType
 from transformer_engine.pytorch.module import LayerNormLinear
 from transformer_engine.pytorch.module import Linear
 from transformer_engine.pytorch.module import LayerNormMLP
@@ -29,6 +50,10 @@ from transformer_engine.pytorch.module import initialize_ub
 from transformer_engine.pytorch.module import destroy_ub
 from transformer_engine.pytorch.module import UserBufferQuantizationMode
 from transformer_engine.pytorch.attention import DotProductAttention
+from transformer_engine.pytorch.attention import GatedDeltaNetAttention
+from transformer_engine.pytorch.attention import GatedDeltaNet2Attention
+from transformer_engine.pytorch.attention import GatedDeltaProductAttention
+from transformer_engine.pytorch.attention import FusedMLAQUpProjFunction, FusedMLAQUpProjRopeQuant
 from transformer_engine.pytorch.attention import MultiheadAttention
 from transformer_engine.pytorch.attention import InferenceParams
 from transformer_engine.pytorch.attention import RotaryPositionEmbedding
@@ -70,9 +95,10 @@ from transformer_engine.pytorch import ops
 from transformer_engine.pytorch import optimizers
 from transformer_engine.pytorch.export import onnx_export
 from transformer_engine.pytorch.cross_entropy import parallel_cross_entropy
-from transformer_engine.pytorch.newton_schulz import (
+from transformer_engine.pytorch.optimizers.newton_schulz import (
     CusolverMpCtx,
     newton_schulz,
+    newton_schulz_tp,
 )
 from transformer_engine.pytorch.quantized_tensor import QuantizedTensorStorage
 from transformer_engine.pytorch.quantized_tensor import QuantizedTensor
@@ -93,6 +119,12 @@ from transformer_engine.pytorch.tensor import Float8Tensor
 from transformer_engine.pytorch.tensor import MXFP8Tensor
 from transformer_engine.pytorch.tensor import Float8BlockwiseQTensor
 from transformer_engine.pytorch.tensor import NVFP4Tensor
+from transformer_engine.pytorch.tensor import HybridQuantizer
+from transformer_engine.pytorch.tensor import HybridQuantizedTensorStorage
+from transformer_engine.pytorch.tensor import IdentityQuantizer
+from transformer_engine.pytorch.tensor import IdentityTensorStorage
+from transformer_engine.pytorch.tensor import HybridQuantizedTensor
+from transformer_engine.pytorch.tensor import IdentityTensor
 from transformer_engine.pytorch.tensor.float8_tensor import (
     _make_float8_tensor_in_reduce_ex,
 )
@@ -104,6 +136,12 @@ from transformer_engine.pytorch.tensor.nvfp4_tensor import (
 )
 from transformer_engine.pytorch.tensor.float8_blockwise_tensor import (
     _make_float8_blockwise_tensor_in_reduce_ex,
+)
+from transformer_engine.pytorch.tensor.hybrid_tensor import (
+    _make_hybrid_quantized_tensor_in_reduce_ex,
+)
+from transformer_engine.pytorch.tensor.identity_tensor import (
+    _make_identity_tensor_in_reduce_ex,
 )
 
 try:
@@ -129,6 +167,8 @@ try:
             MXFP8TensorStorage,
             NVFP4TensorStorage,
             Float8BlockwiseQTensorStorage,
+            HybridQuantizedTensorStorage,
+            IdentityTensorStorage,
             # Quantizer types embedded in metadata
             Quantizer,
             Float8Quantizer,
@@ -136,6 +176,8 @@ try:
             MXFP8Quantizer,
             NVFP4Quantizer,
             Float8BlockQuantizer,
+            HybridQuantizer,
+            IdentityQuantizer,
             # Python IntEnum used as Quantizer.dtype.
             DType,
             # pybind11 enum used as Quantizer.dtype.
@@ -146,6 +188,8 @@ try:
             _make_mxfp8_tensor_in_reduce_ex,
             _make_nvfp4_tensor_in_reduce_ex,
             _make_float8_blockwise_tensor_in_reduce_ex,
+            _make_hybrid_quantized_tensor_in_reduce_ex,
+            _make_identity_tensor_in_reduce_ex,
         ]
     )
 except (ImportError, AttributeError):

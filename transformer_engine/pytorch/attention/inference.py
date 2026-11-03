@@ -9,10 +9,12 @@ from typing import Optional, List
 from einops import rearrange
 
 import torch
-
-import transformer_engine_torch as tex
 from transformer_engine import te_device_type
-from transformer_engine.pytorch.cpp_extensions.fused_attn import QKVFormat
+
+from transformer_engine.pytorch.attention.custom_ops import (
+    copy_to_kv_cache,
+    QKV_FORMAT_VALUE,
+)
 
 __all__ = ["InferenceParams", "KVCacheManager", "NonPagedKVCacheManager", "PagedKVCacheManager"]
 
@@ -460,6 +462,9 @@ class NonPagedKVCacheManager(KVCacheManager):
             dtype=self.dtype,
             device=torch.cuda.current_device(),
         )
+        # Mutated in place, so CUDA graphs are only captured if the addresses are fixed.
+        torch._dynamo.mark_static_address(k_cache)
+        torch._dynamo.mark_static_address(v_cache)
         self.cache[layer_number] = (k_cache, v_cache)
 
     def pre_step(
@@ -550,7 +555,7 @@ class NonPagedKVCacheManager(KVCacheManager):
             batch_size = new_k.shape[1]
             ctx_len = new_k.shape[0]
 
-        tex.copy_to_kv_cache(
+        copy_to_kv_cache(
             new_k,
             new_v,
             k_cache,
@@ -558,7 +563,7 @@ class NonPagedKVCacheManager(KVCacheManager):
             self.batch_indices,
             cu_new_seqlens,
             cu_cached_seqlens,
-            QKVFormat[qkv_format],
+            QKV_FORMAT_VALUE[qkv_format],
             batch_size,
             ctx_len,
             self.max_seqlen,
@@ -657,6 +662,9 @@ class PagedKVCacheManager(KVCacheManager):
             dtype=self.dtype,
             device=torch.cuda.current_device(),
         )
+        # Mutated in place, so CUDA graphs are only captured if the addresses are fixed.
+        torch._dynamo.mark_static_address(k_cache)
+        torch._dynamo.mark_static_address(v_cache)
         self.cache[layer_number] = (k_cache, v_cache)
 
     def print_cache(self):
@@ -808,7 +816,7 @@ class PagedKVCacheManager(KVCacheManager):
             batch_size = new_k.shape[1]
             ctx_len = new_k.shape[0]
 
-        tex.copy_to_kv_cache(
+        copy_to_kv_cache(
             new_k,
             new_v,
             k_cache,
@@ -816,7 +824,7 @@ class PagedKVCacheManager(KVCacheManager):
             self.page_table,
             cu_new_seqlens,
             cu_cached_seqlens,
-            QKVFormat[qkv_format],
+            QKV_FORMAT_VALUE[qkv_format],
             batch_size,
             ctx_len,
             self.max_seqlen,

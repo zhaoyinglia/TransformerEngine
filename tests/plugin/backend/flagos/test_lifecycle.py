@@ -60,7 +60,9 @@ def test_version_queries_and_stream_constants():
             for name, parameter in signature.parameters.items()
             if parameter.default is inspect.Parameter.empty
         }
-        assert backend.get_fused_attn_backend(**required_arguments) == 0
+        selected, reason = backend.get_fused_attn_backend(**required_arguments)
+        assert selected == 0
+        assert reason
 
 
 # ==============================================================================

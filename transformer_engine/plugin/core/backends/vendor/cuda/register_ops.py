@@ -1195,4 +1195,28 @@ def register_builtins(registry) -> None:
         ),
     ]
 
+    # New optional native capabilities obey backend selection policy too.
+    # Their presence in sys.modules alone must never bypass vendor selection.
+    from ....ops import _NATIVE_ONLY_OPERATORS
+
+    registered = {impl.op_name for impl in impls}
+    native = backend._get_tex()
+    for name in sorted(_NATIVE_ONLY_OPERATORS):
+        if name == "grouped_mlp_experimental":
+            name += ".swizzle_scales_and_pack_ptrs_for_discrete_weights"
+        if name in registered:
+            continue
+        function = native
+        for component in name.split("."):
+            function = getattr(function, component, None)
+        if callable(function):
+            impls.append(OpImpl(
+                op_name=name,
+                impl_id="vendor.cuda",
+                kind=BackendImplKind.VENDOR,
+                fn=_bind_is_available(function, is_avail),
+                vendor="CUDA",
+                priority=100,
+            ))
+
     registry.register_many(impls)

@@ -15,6 +15,7 @@ from .utils import (
     cuda_version,
     get_cuda_include_dirs,
     debug_build_enabled,
+    nccl_ep_enabled,
     setup_mpi_flags,
 )
 from typing import List
@@ -22,7 +23,16 @@ from typing import List
 
 def install_requirements() -> List[str]:
     """Install dependencies for TE/PyTorch extensions."""
-    return ["torch>=2.1", "einops", "onnxscript", "onnx", "packaging", "pydantic", "nvdlfw-inspect"]
+    return [
+        "torch>=2.1",
+        "einops",
+        "onnxscript",
+        "onnx",
+        "packaging",
+        "pydantic",
+        "nvdlfw-inspect",
+        "nvidia-cudnn-frontend>=1.29.0",
+    ]
 
 
 def test_requirements() -> List[str]:
@@ -80,7 +90,7 @@ def setup_pytorch_extension(
     # Mirror the NCCL EP gate from setup.py / common CMake. When disabled, the
     # ep.cpp source no-ops at the #ifdef boundary; without the define it would
     # produce undefined references to nvte_ep_*.
-    if bool(int(os.getenv("NVTE_WITH_NCCL_EP", "1"))):
+    if nccl_ep_enabled():
         cxx_flags.append("-DNVTE_WITH_NCCL_EP")
         # PyTorch's symm-mem headers gate the NCCL_HAS_SYMMEM_* feature macros on
         # USE_NCCL. The EP extension shares the symm-mem NCCL comm with torch, so
@@ -107,10 +117,8 @@ def setup_pytorch_extension(
     include_dirs = [str(path) for path in include_dirs]
     from torch.utils.cpp_extension import CppExtension
 
-    # Use transformer_engine_torch_nv as the native NVIDIA module name
-    # This allows the plugin system to use transformer_engine_torch as the unified interface
     return CppExtension(
-        name="transformer_engine_torch_nv",
+        name="transformer_engine_torch",
         sources=[str(src) for src in sources],
         include_dirs=[str(inc) for inc in include_dirs],
         extra_compile_args={"cxx": cxx_flags},

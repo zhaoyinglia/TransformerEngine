@@ -112,7 +112,6 @@ jobs:
         # timeout-minutes: 5
 
       - name: Run L1 PyTorch Distributed Unit Tests
-        continue-on-error: true
         env:
           XML_LOG_DIR: "/logs/pytorch/distributed"
           TE_PATH: .
