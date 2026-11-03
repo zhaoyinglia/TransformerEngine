@@ -1,6 +1,7 @@
 """CPU regressions for FL common initialization, without loading CUDA libraries."""
 
 import ast
+import os
 import importlib.util
 from importlib.machinery import ModuleSpec
 from pathlib import Path
@@ -44,6 +45,15 @@ def common(monkeypatch):
 
 
 @pytest.fixture
+def bootstrap():
+    path = Path(__file__).resolve().parents[1] / "transformer_engine/_fl_bootstrap.py"
+    spec = importlib.util.spec_from_file_location("_fl_bootstrap_review", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture
 def loader(common, monkeypatch):
     state = SimpleNamespace(error=None, version=91300, loads=0, native=None)
     parent = ModuleType("transformer_engine")
@@ -53,6 +63,8 @@ def loader(common, monkeypatch):
     core = ModuleType("transformer_engine.plugin.core")
     stub = ModuleType("transformer_engine_torch")
     core.get_tefl_module = lambda: stub
+    core.load_plugins = lambda: sys.modules.update(transformer_engine_torch=core.get_tefl_module())
+    monkeypatch.setenv("NVTE_PLUGIN", core.__name__)
     parent.plugin = plugin
     plugin.core = core
     for name, module in ((parent.__name__, parent), (plugin.__name__, plugin), (core.__name__, core)):
@@ -84,16 +96,12 @@ def test_native_and_fl_aliases_are_stable(common, loader):
     assert loader.loads == 1
 
 
-@pytest.mark.parametrize("failure", ["exec", "cudnn", "fl_setup"])
+@pytest.mark.parametrize("failure", ["exec", "cudnn"])
 def test_initialization_errors_propagate(common, loader, failure):
     if failure == "exec":
         loader.error = ImportError("broken native load")
     elif failure == "cudnn":
         loader.version = 91100
-    elif failure == "fl_setup":
-        def broken_setup():
-            raise ImportError("FL setup failed")
-        loader.core.get_tefl_module = broken_setup
     with pytest.raises((ImportError, RuntimeError)):
         common.load_framework_extension("torch")
 
@@ -116,34 +124,55 @@ def test_external_plugin_retains_native_alias(common, loader, monkeypatch, failu
             common.load_framework_extension("torch")
     else:
         common.load_framework_extension("torch")
-    assert sys.modules["transformer_engine_torch_nv"] is loader.native
-    assert sys.modules["transformer_engine_torch"] is (loader.stub if failure else replacement)
+    if failure:
+        assert "transformer_engine_torch_nv" not in sys.modules
+    else:
+        assert sys.modules["transformer_engine_torch_nv"] is loader.native
+    assert sys.modules["transformer_engine_torch"] is (loader.native if failure else replacement)
 
 
-def test_empty_override_uses_build_metadata(common, monkeypatch, tmp_path):
+def test_empty_override_uses_build_metadata(bootstrap, monkeypatch, tmp_path):
     root = tmp_path / "transformer_engine"
     (root / "common").mkdir(parents=True)
     (root / "plugin/core").mkdir(parents=True)
     (root / "plugin/core/_build_config.py").write_text("SKIP_CUDA_BUILD = True\n")
-    monkeypatch.setattr(common, "__file__", str(root / "common/__init__.py"))
+    monkeypatch.setattr(bootstrap, "__file__", str(root / "_fl_bootstrap.py"))
     monkeypatch.setenv("TE_FL_SKIP_CUDA", "")
-    assert common.skip_cuda_build() is True
+    assert bootstrap.skip_cuda_build() is True
     monkeypatch.setenv("TE_FL_SKIP_CUDA", "0")
-    assert common.skip_cuda_build() is False
+    assert bootstrap.skip_cuda_build() is False
 
 
-def test_no_cuda_skips_native_and_install_checks(common, loader, monkeypatch):
+def test_no_cuda_skips_native_loader(common, bootstrap, loader, monkeypatch):
     monkeypatch.setenv("TE_FL_SKIP_CUDA", "1")
-    def forbidden():
-        pytest.fail("no-CUDA build queried split CUDA packages")
-    monkeypatch.setattr(common, "get_te_core_package_info", forbidden)
-    common.sanity_checks_for_pypi_installation()
-    common.load_framework_extension("torch")
+    bootstrap.load_pytorch_extension()
     assert loader.loads == 0
+    assert sys.modules["transformer_engine_torch"] is loader.stub
 
 
-def test_monolithic_core_is_not_an_empty_metapackage(common, loader):
-    common.sanity_checks_for_pypi_installation()
+@pytest.mark.parametrize("release", [None, "1"])
+@pytest.mark.parametrize("failure", [False, True])
+def test_common_import_guard_is_temporary(bootstrap, monkeypatch, release, failure):
+    monkeypatch.setenv("TE_FL_SKIP_CUDA", "1")
+    monkeypatch.delenv("NVTE_PROJECT_BUILDING", raising=False)
+    if release is None:
+        monkeypatch.delenv("NVTE_RELEASE_BUILD", raising=False)
+    else:
+        monkeypatch.setenv("NVTE_RELEASE_BUILD", release)
+    def import_common(name):
+        assert name == "transformer_engine.common"
+        assert os.environ["NVTE_PROJECT_BUILDING"] == "1"
+        assert os.environ["NVTE_RELEASE_BUILD"] == "0"
+        if failure:
+            raise RuntimeError("import failed")
+    monkeypatch.setattr(bootstrap.importlib, "import_module", import_common)
+    if failure:
+        with pytest.raises(RuntimeError, match="import failed"):
+            bootstrap.import_common()
+    else:
+        bootstrap.import_common()
+    assert "NVTE_PROJECT_BUILDING" not in os.environ
+    assert os.environ.get("NVTE_RELEASE_BUILD") == release
 
 
 def test_empty_metapackage_still_fails(common, monkeypatch):
@@ -168,13 +197,13 @@ def test_loader_preserves_native_under_nv_alias(common, loader):
     assert sys.modules["transformer_engine_torch"] is loader.stub
 
 
-def test_cuda_discovery_respects_runtime_disable(common, monkeypatch):
+def test_cuda_discovery_respects_runtime_disable(bootstrap, monkeypatch):
     # Exercise the discovery predicate without importing a real CUDA backend.
     path = Path(__file__).resolve().parents[1] / "transformer_engine/plugin/core/backends/vendor/cuda/cuda.py"
     tree = ast.parse(path.read_text())
     predicate = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "_check_cuda_available")
     code = compile(ast.Module(body=[predicate], type_ignores=[]), str(path), "exec")
-    monkeypatch.setitem(sys.modules, "transformer_engine.common", common)
+    monkeypatch.setitem(sys.modules, "transformer_engine._fl_bootstrap", bootstrap)
     monkeypatch.setenv("TE_FL_SKIP_CUDA", "1")
     def forbidden():
         pytest.fail("disabled CUDA backend attempted native library loading")

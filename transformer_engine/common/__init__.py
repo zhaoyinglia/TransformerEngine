@@ -12,7 +12,6 @@ from importlib.metadata import version, distribution, PackageNotFoundError
 import os
 from pathlib import Path
 import platform
-import runpy
 import subprocess
 import sys
 import sysconfig
@@ -23,23 +22,6 @@ import warnings
 # Minimum cuDNN version supported by Transformer Engine, as (major, minor, patch).
 # Keep in sync with kMinCudnnVersion in transformer_engine/common/cudnn_min_version.h.
 MIN_CUDNN_VERSION = (9, 12, 0)
-
-
-def skip_cuda_build() -> bool:
-    """Check if CUDA build was skipped (FL-only mode).
-
-    First checks environment variable (for runtime override),
-    then falls back to build-time configuration.
-    """
-    # Environment variable takes precedence (allows runtime override)
-    if os.environ.get("TE_FL_SKIP_CUDA"):
-        return bool(int(os.environ.get("TE_FL_SKIP_CUDA", "0")))
-
-    # Read build metadata without importing plugin.core before the native alias exists.
-    config_path = Path(__file__).resolve().parent.parent / "plugin/core/_build_config.py"
-    if config_path.is_file():
-        return runpy.run_path(str(config_path))["SKIP_CUDA_BUILD"]
-    return False
 
 
 def decode_cudnn_version(encoded_version: int) -> Tuple[int, int, int]:
@@ -190,19 +172,9 @@ def get_te_core_package_info() -> Tuple[bool, str, str]:
 @functools.lru_cache(maxsize=None)
 def load_framework_extension(framework: str) -> None:
     """
-    Load shared library with Transformer Engine framework bindings.
-
-    For PyTorch, preserve the native extension under transformer_engine_torch_nv
-    before the FL plugin takes over transformer_engine_torch.
+    Load shared library with Transformer Engine framework bindings
+    and check verify correctness if installed via PyPI.
     """
-
-    # Skip loading native extensions if CUDA build was skipped (FL-only mode)
-    if skip_cuda_build():
-        if framework == "torch":
-            import transformer_engine.plugin.core as plugin_core  # pylint: disable=import-outside-toplevel
-
-            sys.modules["transformer_engine_torch"] = plugin_core.get_tefl_module()
-        return
 
     # Supported frameworks.
     assert framework in ("jax", "torch"), f"Unsupported framework {framework}"
@@ -214,11 +186,6 @@ def load_framework_extension(framework: str) -> None:
     extra_dep_name = module_name
     if framework == "torch":
         extra_dep_name = "pytorch"
-
-    # A completed FL load has both the public dispatch and native alias.
-    if module_name in sys.modules:
-        if framework != "torch" or module_name + "_nv" in sys.modules:
-            return
 
     # Find the TE packages. The core and framework packages can only be installed via PyPI.
     # For the `transformer-engine` package, we need to check explicity.
@@ -249,25 +216,29 @@ def load_framework_extension(framework: str) -> None:
     solib = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = solib
     spec.loader.exec_module(solib)
+
+    # Check if the cuDNN version is supported.
     check_cudnn_version(solib.get_cudnn_version())
 
-    if framework == "torch":
-        # CUDA backend discovery requires the native alias before importing FL.
-        sys.modules[module_name + "_nv"] = solib
-        import transformer_engine.plugin.core as plugin_core  # pylint: disable=import-outside-toplevel
-
-        sys.modules[module_name] = plugin_core.get_tefl_module()
-
-    # Optional upstream plugin entrypoint; FL is the fallback on plugin failure.
+    # Plugin system: set NVTE_PLUGIN=<module_name> to let plugin stub take over
+    # transformer_engine_torch and register original pybind as _nv for CUDA backend.
+    # Only applies to the PyTorch extension — JAX has no plugin stub.
     _nvte_plugin = os.environ.get("NVTE_PLUGIN")
     if _nvte_plugin and framework == "torch":
         _original_module = sys.modules.get(module_name)
         try:
+            # Register _nv alias BEFORE importing the plugin, because the
+            # plugin module may import transformer_engine_torch_nv at top level.
+            sys.modules[module_name + "_nv"] = solib
             _plugin = importlib.import_module(_nvte_plugin)
             _plugin.load_plugins()
         except Exception as e:  # pylint: disable=broad-exception-caught
-            sys.modules[module_name + "_nv"] = solib
-            sys.modules[module_name] = _original_module
+            # Rollback to pre-plugin state if plugin failed to fully initialize
+            sys.modules.pop(module_name + "_nv", None)
+            if _original_module is not None:
+                sys.modules[module_name] = _original_module
+            else:
+                sys.modules.pop(module_name, None)
             warnings.warn(
                 f"NVTE_PLUGIN={_nvte_plugin} but plugin loading failed: {e}",
                 RuntimeWarning,
@@ -277,10 +248,6 @@ def load_framework_extension(framework: str) -> None:
 
 def sanity_checks_for_pypi_installation() -> None:
     """Ensure that package is installed correctly if using PyPI."""
-
-    # Skip sanity checks if CUDA build was skipped (FL-only mode)
-    if skip_cuda_build():
-        return
 
     te_core_installed, te_core_package_name, te_core_version = get_te_core_package_info()
     te_installed = _is_package_installed("transformer_engine")
@@ -299,14 +266,6 @@ def sanity_checks_for_pypi_installation() -> None:
 
     # Only the metapackage is found, invalid usecase.
     elif te_installed_via_pypi:
-        # FL source-built wheels can bundle core and framework libraries in
-        # one distribution, without a separate transformer-engine-cu* package.
-        try:
-            _get_shared_object_file("core")
-        except FileNotFoundError:
-            pass
-        else:
-            return
         raise RuntimeError(
             "Found empty `transformer-engine` meta package installed. "
             "Install `transformer-engine` with framework extensions via"
@@ -532,29 +491,29 @@ if "NVTE_PROJECT_BUILDING" not in os.environ or bool(int(os.getenv("NVTE_RELEASE
     # `_load_cuda_library` is used for packages that must be loaded
     # during runtime. Both system and pypi packages are searched
     # and an error is thrown if not found.
-    if not skip_cuda_build():
-        _, _CUDNN_LIB_CTYPES = _load_cuda_library("cudnn")
-        system_nvrtc, _NVRTC_LIB_CTYPES = _load_cuda_library("nvrtc")
-        system_curand, _CURAND_LIB_CTYPES = _load_cuda_library("curand")
+    _, _CUDNN_LIB_CTYPES = _load_cuda_library("cudnn")
+    system_nvrtc, _NVRTC_LIB_CTYPES = _load_cuda_library("nvrtc")
+    system_curand, _CURAND_LIB_CTYPES = _load_cuda_library("curand")
 
-        # This additional step is necessary to import TE wheels when the CUDA
-        # toolkit is absent but its runtime libraries are provided by Python.
-        load_libs_for_no_ctk = not system_nvrtc and not system_curand
-        if load_libs_for_no_ctk:
-            _CUBLAS_LIB_CTYPES = _load_cuda_library_from_python("cublas", strict=True)
-            _CUDART_LIB_CTYPES = _load_cuda_library_from_python("cudart", strict=True)
-            _CUDNN_ALL_LIB_CTYPES = _load_cuda_library_from_python("cudnn", strict=True)
+    # This additional step is necessary to be able to install TE wheels
+    # and import TE (without any guards) in an environment where the cuda
+    # toolkit might be absent without being guarded
+    load_libs_for_no_ctk = not system_nvrtc and not system_curand
+    if load_libs_for_no_ctk:
+        _CUBLAS_LIB_CTYPES = _load_cuda_library_from_python("cublas", strict=True)
+        _CUDART_LIB_CTYPES = _load_cuda_library_from_python("cudart", strict=True)
+        _CUDNN_ALL_LIB_CTYPES = _load_cuda_library_from_python("cudnn", strict=True)
 
-        # Prepare CuTeDSL backend for on-demand compilation via TVM-FFI if enabled.
-        if os.environ.get("NVTE_ENABLE_CUTEDSL_BACKEND", "0") != "0":
-            _load_tvm_ffi_library()
-            _register_cutedsl_backends()
+    # Prepare CuTeDSL backend for on-demand compilation via TVM-FFI if user enables it.
+    if os.environ.get("NVTE_ENABLE_CUTEDSL_BACKEND", "0") != "0":
+        _load_tvm_ffi_library()
+        _register_cutedsl_backends()
 
-        _TE_LIB_CTYPES = _load_core_library()
+    _TE_LIB_CTYPES = _load_core_library()
 
-        # Needed to find the correct headers for NVRTC kernels.
-        _cuda_major_version = _cuda_runtime_major(_TE_LIB_CTYPES)
-        if not os.getenv("NVTE_CUDA_INCLUDE_DIR") and _cuda_major_version is not None:
-            cuda_include_dir = _nvidia_cudart_include_dir(_cuda_major_version)
-            if cuda_include_dir:
-                os.environ["NVTE_CUDA_INCLUDE_DIR"] = cuda_include_dir
+    # Needed to find the correct headers for NVRTC kernels.
+    _cuda_major_version = _cuda_runtime_major(_TE_LIB_CTYPES)
+    if not os.getenv("NVTE_CUDA_INCLUDE_DIR") and _cuda_major_version is not None:
+        cuda_include_dir = _nvidia_cudart_include_dir(_cuda_major_version)
+        if cuda_include_dir:
+            os.environ["NVTE_CUDA_INCLUDE_DIR"] = cuda_include_dir

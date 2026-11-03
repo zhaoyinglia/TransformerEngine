@@ -13,7 +13,9 @@ from ctypes.util import find_library
 from importlib import metadata
 from pathlib import Path
 from typing import Optional, Tuple
-import transformer_engine.common
+from ._fl_bootstrap import import_common, load_pytorch_extension
+
+common = import_common()
 
 # Minimum NCCL version for the runtime-loaded NCCL EP backend.
 _NCCL_EP_MIN_VERSION = (2, 30, 4)
@@ -45,7 +47,7 @@ def _nccl_ep_library_installed() -> bool:
             return True
 
     try:
-        transformer_engine.common._get_shared_object_file("nccl_ep")
+        common._get_shared_object_file("nccl_ep")
     except FileNotFoundError:
         return find_library("nccl_ep") is not None
     else:
@@ -91,7 +93,7 @@ else:
 
     # Establish the native alias and FL dispatch before vendor patch imports.
     try:
-        transformer_engine.common.load_framework_extension("torch")
+        load_pytorch_extension()
     except (ImportError, FileNotFoundError):
         pass
 

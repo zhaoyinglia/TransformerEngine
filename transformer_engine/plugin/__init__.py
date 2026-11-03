@@ -23,3 +23,10 @@ __all__ = [
     "get_registry",
     "tefl",
 ]
+
+
+def load_plugins():
+    """NVTE_PLUGIN entrypoint: expose FL dispatch under the public extension name."""
+    import sys
+
+    sys.modules["transformer_engine_torch"] = _get_tefl_module()
