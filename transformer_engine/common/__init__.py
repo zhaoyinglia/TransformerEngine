@@ -245,38 +245,18 @@ def load_framework_extension(framework: str) -> None:
         )
 
     # After all checks are completed, load the shared object file.
-    previous_module = sys.modules.get(module_name)
-    native_alias = module_name + "_nv"
-    previous_native = sys.modules.get(native_alias)
-    solib = previous_module
-    try:
-        if solib is None:
-            spec = importlib.util.spec_from_file_location(module_name, _get_shared_object_file(framework))
-            solib = importlib.util.module_from_spec(spec)
-            sys.modules[module_name] = solib
-            spec.loader.exec_module(solib)
-        check_cudnn_version(solib.get_cudnn_version())
+    spec = importlib.util.spec_from_file_location(module_name, _get_shared_object_file(framework))
+    solib = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = solib
+    spec.loader.exec_module(solib)
+    check_cudnn_version(solib.get_cudnn_version())
 
-        if framework == "torch":
-            # Register _nv BEFORE importing the plugin: CUDA backend discovery
-            # imports transformer_engine_torch_nv during initialization.
-            sys.modules[native_alias] = solib
-            import transformer_engine.plugin.core as plugin_core  # pylint: disable=import-outside-toplevel
+    if framework == "torch":
+        # CUDA backend discovery requires the native alias before importing FL.
+        sys.modules[module_name + "_nv"] = solib
+        import transformer_engine.plugin.core as plugin_core  # pylint: disable=import-outside-toplevel
 
-            # The plugin's automatic registration preserves existing modules,
-            # so explicitly replace the native public entry with FL dispatch.
-            sys.modules[module_name] = plugin_core.get_tefl_module()
-    except Exception:
-        if previous_module is None:
-            sys.modules.pop(module_name, None)
-        else:
-            sys.modules[module_name] = previous_module
-        if framework == "torch":
-            if previous_native is None:
-                sys.modules.pop(native_alias, None)
-            else:
-                sys.modules[native_alias] = previous_native
-        raise
+        sys.modules[module_name] = plugin_core.get_tefl_module()
 
     # Optional upstream plugin entrypoint; FL is the fallback on plugin failure.
     _nvte_plugin = os.environ.get("NVTE_PLUGIN")
@@ -286,7 +266,7 @@ def load_framework_extension(framework: str) -> None:
             _plugin = importlib.import_module(_nvte_plugin)
             _plugin.load_plugins()
         except Exception as e:  # pylint: disable=broad-exception-caught
-            sys.modules[native_alias] = solib
+            sys.modules[module_name + "_nv"] = solib
             sys.modules[module_name] = _original_module
             warnings.warn(
                 f"NVTE_PLUGIN={_nvte_plugin} but plugin loading failed: {e}",

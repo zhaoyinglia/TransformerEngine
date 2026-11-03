@@ -85,7 +85,7 @@ def test_native_and_fl_aliases_are_stable(common, loader):
 
 
 @pytest.mark.parametrize("failure", ["exec", "cudnn", "fl_setup"])
-def test_failed_initialization_can_retry(common, loader, failure):
+def test_initialization_errors_propagate(common, loader, failure):
     if failure == "exec":
         loader.error = ImportError("broken native load")
     elif failure == "cudnn":
@@ -96,13 +96,6 @@ def test_failed_initialization_can_retry(common, loader, failure):
         loader.core.get_tefl_module = broken_setup
     with pytest.raises((ImportError, RuntimeError)):
         common.load_framework_extension("torch")
-    assert "transformer_engine_torch" not in sys.modules
-    assert "transformer_engine_torch_nv" not in sys.modules
-    loader.error = None
-    loader.version = 91300
-    loader.core.get_tefl_module = lambda: loader.stub
-    common.load_framework_extension("torch")
-    assert sys.modules["transformer_engine_torch"] is loader.stub
 
 
 @pytest.mark.parametrize("failure", [False, True])
@@ -166,19 +159,6 @@ def test_split_install_version_check_is_preserved(common, loader, monkeypatch):
     monkeypatch.setattr(common, "version", lambda name: "2.20.2")
     with pytest.raises(AssertionError, match="version mismatch"):
         common.sanity_checks_for_pypi_installation()
-
-
-def test_preimported_native_is_validated_without_replacing_public(common, loader):
-    native = ModuleType("transformer_engine_torch")
-    native.get_cudnn_version = lambda: 91100
-    sys.modules["transformer_engine_torch"] = native
-    with pytest.raises(RuntimeError, match="cuDNN"):
-        common.load_framework_extension("torch")
-    assert sys.modules["transformer_engine_torch"] is native
-    native.get_cudnn_version = lambda: 91300
-    common.load_framework_extension("torch")
-    assert loader.loads == 0
-    assert sys.modules["transformer_engine_torch_nv"] is native
 
 
 def test_loader_preserves_native_under_nv_alias(common, loader):
