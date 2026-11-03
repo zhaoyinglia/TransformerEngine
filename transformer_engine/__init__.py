@@ -13,7 +13,9 @@ from ctypes.util import find_library
 from importlib import metadata
 from pathlib import Path
 from typing import Optional, Tuple
-import transformer_engine.common
+from .plugin.bootstrap import import_common
+
+common = import_common()
 
 # Minimum NCCL version for the runtime-loaded NCCL EP backend.
 _NCCL_EP_MIN_VERSION = (2, 30, 4)
@@ -45,7 +47,7 @@ def _nccl_ep_library_installed() -> bool:
             return True
 
     try:
-        transformer_engine.common._get_shared_object_file("nccl_ep")
+        common._get_shared_object_file("nccl_ep")
     except FileNotFoundError:
         return find_library("nccl_ep") is not None
     else:
@@ -79,6 +81,7 @@ def require_nccl_ep() -> None:
             f"NCCL EP requires NCCL >= {mn} at runtime; found "
             f"{'.'.join(str(x) for x in cur)}. Upgrade NCCL to a compatible version."
         )
+
 
 
 try:

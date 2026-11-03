@@ -10,6 +10,7 @@ from typing import Optional
 import torch
 
 import transformer_engine_torch as tex
+from transformer_engine import te_device_type
 from ...quantization import FP8GlobalStateManager
 from ..op import BasicOperation, OperationContext
 from ...utils import canonicalize_device, canonicalize_dtype
@@ -95,7 +96,7 @@ class Bias(BasicOperation):
 
         # Make sure parameter is initialized
         bias = self.bias
-        if bias.device.type != "cuda":
+        if bias.device.type != te_device_type():
             bias = torch.empty_like(bias, device=self.device)
         else:
             bias = bias.to(device=self.device)

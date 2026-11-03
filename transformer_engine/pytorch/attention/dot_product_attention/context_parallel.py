@@ -1469,6 +1469,9 @@ def cp_p2p_bwd_flash_attn(
         and not fa_utils.v2_7_0_plus
     ):
         fa_backward_kwargs["window_size"] = (-1, -1)
+        if rng_states is not None:
+            # FlashAttention 2.3 through 2.6 also needs the saved dropout state.
+            fa_backward_kwargs["rng_state"] = rng_states[cp_size - step - 1]
     elif use_flash_attn_3 or use_flash_attn_4 or fa_utils.v2_7_0_plus:
         fa_backward_kwargs["window_size_left"] = -1
         fa_backward_kwargs["window_size_right"] = -1

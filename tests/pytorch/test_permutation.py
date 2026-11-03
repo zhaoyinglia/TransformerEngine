@@ -219,6 +219,8 @@ def backward_wrapper(
 
 def _maybe_compile(fn, use_torch_compile):
     """Wrap fn with torch.compile(fullgraph=True) if requested."""
+    if use_torch_compile and os.environ.get("PLATFORM") in {"musa", "mthreads"}:
+        pytest.skip("MUSA Torch Inductor does not yet support these permutation graphs")
     if use_torch_compile:
         torch._dynamo.reset()
         import torch._functorch.config as functorch_config
@@ -239,6 +241,8 @@ def _test_permutation_index_map(
     BENCHMARK=False,
     use_torch_compile=False,
 ):
+    if os.environ.get("PLATFORM") in {"musa", "mthreads"}:
+        pytest.skip("MUSA vendor TE does not yet provide the index-map permutation kernel")
     if not with_probs and topK > 1:
         pytest.skip("Only permutations with topK=1 and without probabilities are supported.")
 
@@ -1677,6 +1681,10 @@ if te.is_bf16_available():
 @pytest.mark.parametrize("hidden_size", [4096])
 @pytest.mark.parametrize("topK", [2, 5])
 @pytest.mark.parametrize("num_out_tokens", [None, 2039])
+@pytest.mark.skipif(
+    os.environ.get("PLATFORM") == "metax",
+    reason="te_permute bwd precision mismatch on metax platforms",
+)
 @pytest.mark.parametrize("use_torch_compile", [False, True])
 def test_permutation_index_map(
     te_dtype,

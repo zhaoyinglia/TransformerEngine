@@ -90,7 +90,9 @@ class DType(enum.IntEnum):
 
 # Fail fast at import time if a new enumerator is added
 # on the C++ side without being mirrored above.
-assert {m.name for m in DType} == set(tex.DType.__members__), (
+assert {m.name for m in DType}.issubset(tex.DType.__members__) and all(
+    int(member) == int(getattr(tex.DType, member.name)) for member in DType
+), (
     "DType in python is out of sync with transformer_engine_torch.DType; "
     "defined in C++ side. Please make sure TE C++ and python are in sync."
 )

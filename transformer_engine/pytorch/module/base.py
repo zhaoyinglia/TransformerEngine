@@ -19,6 +19,7 @@ import torch.nn.functional as F
 from torch.distributed.tensor import DTensor
 
 import transformer_engine_torch as tex
+from transformer_engine import te_device_type, te_platform
 
 from ._common import _ParameterInitMeta, noop_cat
 from .._extra_state import (
@@ -140,7 +141,7 @@ def get_dummy_wgrad(shape: list, dtype: torch.dtype, zero=False) -> torch.Tensor
         _dummy_wgrads[key] = torch.empty(
             shape,
             dtype=dtype,
-            device="cuda",
+            device=te_device_type(),
             requires_grad=False,
         )
     if zero:
@@ -892,8 +893,8 @@ class TransformerEngineBaseModule(torch.nn.Module, ABC):
 
     def __init__(self, name: Optional[str] = None) -> None:
         super().__init__()
-        if not torch.cuda.is_available():
-            raise RuntimeError("TransformerEngine needs CUDA.")
+        if not te_platform().is_available():
+            raise RuntimeError(f"TransformerEngine needs {te_device_type()}.")
         self.name = name
         self.next_iter_when_debug_should_be_run = 0
         self.fp8_initialized = False
@@ -1438,7 +1439,7 @@ class TransformerEngineBaseModule(torch.nn.Module, ABC):
             if not unsafe_pickle_extra_state_enabled():
                 raise RuntimeError(extra_state_pickle_advisory(context))
             state.seek(0)
-            state = torch.load(state, map_location="cuda", weights_only=False)
+            state = torch.load(state, map_location=te_device_type(), weights_only=False)
         else:
             raise RuntimeError("Unsupported checkpoint format.")
 
@@ -1602,9 +1603,9 @@ class TransformerEngineBaseModule(torch.nn.Module, ABC):
             delayed_scaling_recipe = _has_delayed_scaling_state(self.fp8_meta)
             FP8GlobalStateManager.get_old_fp8_meta_tensors_for_recompute(self.fp8_meta)
         else:
-            if not inp.is_cuda:
+            if inp.device.type != te_device_type():
                 raise RuntimeError(
-                    f"TransformerEngine needs CUDA. Got input on device: {inp.device}"
+                    f"TransformerEngine needs {te_device_type()}. Got input on device: {inp.device}"
                 )
 
             if self.tp_size > 1:
@@ -1818,7 +1819,7 @@ class TransformerEngineBaseModule(torch.nn.Module, ABC):
             param = param._local_tensor if is_dtensor else param
             # Ensure parameter is on a real device
             if param.device == torch.device("meta"):
-                param = torch.empty_like(param, device="cuda")
+                param = torch.empty_like(param, device=te_device_type())
             # Initialize the parameter values on device
             init_fn = self.param_init_meta[name].init_fn
             get_rng_state_tracker = self.param_init_meta[name].get_rng_state_tracker

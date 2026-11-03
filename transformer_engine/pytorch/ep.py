@@ -356,8 +356,8 @@ def _dispatch_op(
     topk_weights: torch.Tensor,
     recv_tokens: torch.Tensor,
     recv_topk_weights: torch.Tensor,
-    tokens_scale_inv: Optional[torch.Tensor] = None,
-    recv_scale_inv: Optional[torch.Tensor] = None,
+    tokens_scale_inv: Optional[torch.Tensor],
+    recv_scale_inv: Optional[torch.Tensor],
 ) -> None:
     tex.ep_dispatch(
         handle_mem,
@@ -399,8 +399,8 @@ def _prepare_and_dispatch_op(
     alignment: int,
     recv_tokens: torch.Tensor,
     recv_topk_weights: torch.Tensor,
-    recv_scale_inv: Optional[torch.Tensor] = None,
-    tokens_scale_inv: Optional[torch.Tensor] = None,
+    recv_scale_inv: Optional[torch.Tensor],
+    tokens_scale_inv: Optional[torch.Tensor],
 ) -> None:
     tex.ep_prepare_and_dispatch(
         handle_mem,
@@ -470,8 +470,8 @@ def _combine_bwd_op(
     handle_mem: torch.Tensor,
     grad: torch.Tensor,
     grad_expert_out: torch.Tensor,
-    grad_scale_inv: Optional[torch.Tensor] = None,
-    grad_expert_out_scale_inv: Optional[torch.Tensor] = None,
+    grad_scale_inv: Optional[torch.Tensor],
+    grad_expert_out_scale_inv: Optional[torch.Tensor],
 ) -> None:
     tex.ep_combine_bwd(handle_mem, grad, grad_expert_out, grad_scale_inv, grad_expert_out_scale_inv)
 
@@ -809,7 +809,9 @@ def _ep_combine_bwd(state: "_CombineState", g_result: torch.Tensor):
         if state.eager:
             tex.ep_combine_bwd(handle_mem, g_result, grad_expert_out, None, None)
         else:
-            torch.ops.transformer_engine_ep.combine_bwd(handle_mem, g_result, grad_expert_out)
+            torch.ops.transformer_engine_ep.combine_bwd(
+                handle_mem, g_result, grad_expert_out, None, None
+            )
     else:
         mx, g_scale_inv = _quantize_mxfp8(g_result)
         g_data = mx._rowwise_data

@@ -11,6 +11,17 @@ import sys
 from functools import wraps
 import math
 
+if os.environ.get("PLATFORM") == "ascend":
+    sys.path.insert(
+        0,
+        os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "../..", "plugin", "backend", "npu")
+        ),
+    )
+    from npu_patch import apply_ascend_npu_patch
+
+    apply_ascend_npu_patch()
+
 import transformer_engine.pytorch as te
 import torch
 from torch import nn
@@ -29,6 +40,16 @@ from transformer_engine.pytorch import Float8CurrentScalingQuantizer, NVFP4Quant
 from transformer_engine.pytorch.constants import NVFP4_BLOCK_SCALING_SIZE
 from transformer_engine.pytorch.distributed import gather_along_first_dim
 from run_layer_with_overlap import _compare_tensors
+
+# Fullgraph Linear uses the same opaque-object APIs as test_torch_compile.py.
+# Keep eager distributed numerics runnable on PyTorch builds without them.
+try:
+    from torch._opaque_base import OpaqueBaseMeta
+    from torch._library.opaque_object import get_opaque_type_name, register_custom_class, MemberType
+
+    _opaque_available = True
+except ImportError:
+    _opaque_available = False
 
 SEQ_LEN, BATCH_SIZE = 16, 16
 HIDDEN_SIZE = 64
@@ -106,6 +127,7 @@ def main(argv=None, namespace=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("-l", "--layer-type", type=str)
     parser.add_argument("--quantization", type=str, default=None)
+    parser.add_argument("--test-suite", choices=("full", "ascend_smoke"), default="full")
     args = parser.parse_args(argv, namespace)
 
     # Quantization scheme
@@ -124,15 +146,18 @@ def main(argv=None, namespace=None):
         BATCH_SIZE = 128
         HIDDEN_SIZE = 512
 
-    test_dict = [
-        test_quantizer,
-        test_quantized_all_gather,
-        test_linear,
-        test_layernorm,
-        test_layernorm_linear,
-        test_layernorm_mlp,
-        test_transformer_layer,
-    ]
+    if args.test_suite == "ascend_smoke":
+        test_dict = [test_ascend_distributed_numerics_subset]
+    else:
+        test_dict = [
+            test_quantizer,
+            test_quantized_all_gather,
+            test_linear,
+            test_layernorm,
+            test_layernorm_linear,
+            test_layernorm_mlp,
+            test_transformer_layer,
+        ]
 
     for test in test_dict:
         test()
@@ -792,6 +817,12 @@ def test_linear():
             continue
         if kwargs.get("use_compile", False) and QUANTIZATION == "fp8":
             continue
+        if kwargs.get("use_compile", False) and not _opaque_available:
+            dist_print(
+                f"[SKIP] compiled Linear configuration {kwargs}: "
+                "this PyTorch build lacks the required opaque-object APIs"
+            )
+            continue
         for parallel_mode in ["column", "row"]:
             for sequence_parallel in [False, True]:
                 _test_linear(parallel_mode, sequence_parallel, **kwargs)
@@ -1088,6 +1119,11 @@ def test_layernorm_mlp():
         for set_parallel_mode in [True]:
             for sequence_parallel in [False, True]:
                 _test_layernorm_mlp(set_parallel_mode, sequence_parallel, **kwargs)
+
+
+def test_ascend_distributed_numerics_subset():
+    """Run Ascend-compatible distributed numerics without CUDA-only paths."""
+    _test_linear("column", False)
 
 
 ############################################
