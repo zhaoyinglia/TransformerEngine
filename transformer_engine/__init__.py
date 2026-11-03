@@ -13,7 +13,7 @@ from ctypes.util import find_library
 from importlib import metadata
 from pathlib import Path
 from typing import Optional, Tuple
-from .plugin.bootstrap import import_common, load_pytorch_extension
+from .plugin.bootstrap import import_common
 
 common = import_common()
 
@@ -82,52 +82,6 @@ def require_nccl_ep() -> None:
             f"{'.'.join(str(x) for x in cur)}. Upgrade NCCL to a compatible version."
         )
 
-
-try:
-    import torch
-except ImportError:
-    pass
-else:
-    TE_DEVICE_TYPE = "cuda"
-    TE_PLATFORM = torch.cuda
-
-    # Establish the native alias and FL dispatch before vendor patch imports.
-    try:
-        load_pytorch_extension()
-    except (ImportError, FileNotFoundError):
-        pass
-
-    for _vendor in ("musa", "tsingmicro", "npu"):
-        try:
-            from importlib import import_module
-
-            import_module(
-                f"transformer_engine.plugin.core.backends.vendor.{_vendor}.patches"
-            ).apply_patch()
-        except Exception:  # pylint: disable=broad-exception-caught
-            pass
-
-
-def te_device_type(default: str = "cuda") -> str:
-    """Return the active FL device type, or the supplied default."""
-    # Direct global loads can be guarded by torch.compile; globals() cannot be traced.
-    try:
-        return TE_DEVICE_TYPE
-    except NameError:
-        return default
-
-
-def te_platform(default=None):
-    """Return the active FL device module, or the supplied default."""
-    try:
-        return TE_PLATFORM
-    except NameError:
-        if default is not None:
-            return default
-        try:
-            return torch.cuda
-        except NameError:
-            return None
 
 
 try:

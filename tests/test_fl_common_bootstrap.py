@@ -254,3 +254,46 @@ def test_plugin_bootstrap_defers_core_and_preserves_exports(monkeypatch):
     monkeypatch.setitem(sys.modules, "transformer_engine_torch", ModuleType("native"))
     plugin.load_plugins()
     assert sys.modules["transformer_engine_torch"] is stub
+
+
+@pytest.mark.parametrize("no_cuda", [False, True])
+@pytest.mark.parametrize("has_patches", [False, True])
+def test_optional_patches_run_after_plugin(common, bootstrap, loader, monkeypatch, no_cuda, has_patches):
+    events = []
+    loader.core.__path__ = []
+    def setup():
+        events.append("load")
+        return loader.stub
+    loader.core.get_tefl_module = setup
+    patch = ModuleType(loader.core.__name__ + ".patches")
+    patch.__spec__ = ModuleSpec(patch.__name__, loader=None)
+    def apply():
+        assert sys.modules["transformer_engine_torch"] is loader.stub
+        events.append("patch")
+    patch.apply_patches = apply
+    if has_patches:
+        monkeypatch.setitem(sys.modules, patch.__name__, patch)
+    if no_cuda:
+        monkeypatch.setenv("TE_FL_SKIP_CUDA", "1")
+        bootstrap.load_pytorch_extension()
+    else:
+        common.load_framework_extension("torch")
+    assert events == (["load", "patch"] if has_patches else ["load"])
+
+
+@pytest.mark.parametrize("patched", [False, True])
+def test_device_defaults_preserve_plugin_values(monkeypatch, patched):
+    parent = ModuleType("transformer_engine")
+    platform = object()
+    if patched:
+        parent.TE_DEVICE_TYPE = "test_vendor"
+        parent.TE_PLATFORM = platform
+    path = Path(__file__).resolve().parents[1] / "transformer_engine/pytorch/__init__.py"
+    source = path.read_text()
+    start = source.index("# Device type and platform globals")
+    end = source.index("from transformer_engine.pytorch import constants", start)
+    cuda = object()
+    namespace = {"transformer_engine": parent, "torch": SimpleNamespace(cuda=cuda)}
+    exec(compile(source[start:end], str(path), "exec"), namespace)
+    assert parent.te_device_type() == ("test_vendor" if patched else "cuda")
+    assert parent.te_platform() is (platform if patched else cuda)

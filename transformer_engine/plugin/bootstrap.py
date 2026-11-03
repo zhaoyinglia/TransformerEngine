@@ -37,7 +37,10 @@ def load_pytorch_extension():
     """Select FL-only initialization or the upstream native/plugin sequence."""
     plugin = os.environ.setdefault("NVTE_PLUGIN", "transformer_engine.plugin")
     if skip_cuda_build():
-        importlib.import_module(plugin).load_plugins()
+        module = importlib.import_module(plugin)
+        module.load_plugins()
+        if hasattr(module, "__path__") and importlib.util.find_spec(f"{plugin}.patches") is not None:
+            importlib.import_module(f"{plugin}.patches").apply_patches()
     else:
         from transformer_engine.common import load_framework_extension
 
