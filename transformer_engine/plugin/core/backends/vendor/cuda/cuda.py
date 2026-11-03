@@ -98,7 +98,7 @@ def _check_cuda_available() -> bool:
 
     # Match common's build metadata and runtime override before importing the
     # real _nv extension, including discovery that bypasses vendor.__init__.
-    from transformer_engine._fl_bootstrap import skip_cuda_build
+    from transformer_engine.plugin.bootstrap import skip_cuda_build
 
     if skip_cuda_build():
         return False

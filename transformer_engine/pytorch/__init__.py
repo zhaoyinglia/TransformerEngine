@@ -10,7 +10,7 @@ import functools
 
 import torch
 
-from transformer_engine._fl_bootstrap import load_pytorch_extension
+from transformer_engine.plugin.bootstrap import load_pytorch_extension
 from transformer_engine.pytorch.torch_version import torch_version
 
 assert torch_version() >= (2, 1), f"Minimum torch version 2.1 required. Found {torch_version()}."

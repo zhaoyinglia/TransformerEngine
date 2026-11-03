@@ -10,7 +10,7 @@ def skip_cuda_build() -> bool:
     """Use the runtime override, then the generated build configuration."""
     if os.environ.get("TE_FL_SKIP_CUDA"):
         return bool(int(os.environ["TE_FL_SKIP_CUDA"]))
-    config = Path(__file__).parent / "plugin/core/_build_config.py"
+    config = Path(__file__).parent / "core/_build_config.py"
     return runpy.run_path(str(config))["SKIP_CUDA_BUILD"] if config.is_file() else False
 
 

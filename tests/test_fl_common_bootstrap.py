@@ -46,7 +46,7 @@ def common(monkeypatch):
 
 @pytest.fixture
 def bootstrap():
-    path = Path(__file__).resolve().parents[1] / "transformer_engine/_fl_bootstrap.py"
+    path = Path(__file__).resolve().parents[1] / "transformer_engine/plugin/bootstrap.py"
     spec = importlib.util.spec_from_file_location("_fl_bootstrap_review", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -136,7 +136,7 @@ def test_empty_override_uses_build_metadata(bootstrap, monkeypatch, tmp_path):
     (root / "common").mkdir(parents=True)
     (root / "plugin/core").mkdir(parents=True)
     (root / "plugin/core/_build_config.py").write_text("SKIP_CUDA_BUILD = True\n")
-    monkeypatch.setattr(bootstrap, "__file__", str(root / "_fl_bootstrap.py"))
+    monkeypatch.setattr(bootstrap, "__file__", str(root / "plugin/bootstrap.py"))
     monkeypatch.setenv("TE_FL_SKIP_CUDA", "")
     assert bootstrap.skip_cuda_build() is True
     monkeypatch.setenv("TE_FL_SKIP_CUDA", "0")
@@ -203,7 +203,7 @@ def test_cuda_discovery_respects_runtime_disable(bootstrap, monkeypatch):
     tree = ast.parse(path.read_text())
     predicate = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "_check_cuda_available")
     code = compile(ast.Module(body=[predicate], type_ignores=[]), str(path), "exec")
-    monkeypatch.setitem(sys.modules, "transformer_engine._fl_bootstrap", bootstrap)
+    monkeypatch.setitem(sys.modules, "transformer_engine.plugin.bootstrap", bootstrap)
     monkeypatch.setenv("TE_FL_SKIP_CUDA", "1")
     def forbidden():
         pytest.fail("disabled CUDA backend attempted native library loading")
@@ -220,3 +220,37 @@ def test_native_alias_exists_before_fl_setup(common, loader):
     loader.core.get_tefl_module = setup
     common.load_framework_extension("torch")
     assert sys.modules["transformer_engine_torch"] is loader.stub
+
+
+def test_plugin_bootstrap_defers_core_and_preserves_exports(monkeypatch):
+    root = Path(__file__).resolve().parents[1] / "transformer_engine"
+    parent = ModuleType("transformer_engine")
+    parent.__path__ = [str(root)]
+    monkeypatch.setitem(sys.modules, "transformer_engine", parent)
+    for name in list(sys.modules):
+        if name == "transformer_engine.plugin" or name.startswith("transformer_engine.plugin."):
+            monkeypatch.delitem(sys.modules, name)
+    spec = importlib.util.spec_from_file_location("transformer_engine.plugin", root / "plugin/__init__.py")
+    plugin = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, spec.name, plugin)
+    spec.loader.exec_module(plugin)
+    spec = importlib.util.spec_from_file_location("transformer_engine.plugin.bootstrap", root / "plugin/bootstrap.py")
+    bootstrap = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, spec.name, bootstrap)
+    spec.loader.exec_module(bootstrap)
+    assert "transformer_engine.plugin.core" not in sys.modules
+
+    core = ModuleType("transformer_engine.plugin.core")
+    stub = ModuleType("fl_dispatch")
+    core.TEFLBackendBase = type("TEFLBackendBase", (), {})
+    core.TEFLModule = type("TEFLModule", (), {})
+    core.get_tefl_module = lambda: stub
+    core.get_registry = lambda: "registry"
+    monkeypatch.setitem(sys.modules, core.__name__, core)
+    for name in plugin.__all__:
+        assert getattr(plugin, name) is (stub if name == "tefl" else getattr(core, name))
+    with pytest.raises(AttributeError):
+        getattr(plugin, "unknown_export")
+    monkeypatch.setitem(sys.modules, "transformer_engine_torch", ModuleType("native"))
+    plugin.load_plugins()
+    assert sys.modules["transformer_engine_torch"] is stub

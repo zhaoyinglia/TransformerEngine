@@ -13,7 +13,7 @@ from ctypes.util import find_library
 from importlib import metadata
 from pathlib import Path
 from typing import Optional, Tuple
-from ._fl_bootstrap import import_common, load_pytorch_extension
+from .plugin.bootstrap import import_common, load_pytorch_extension
 
 common = import_common()
 
